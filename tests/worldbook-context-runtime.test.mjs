@@ -87,8 +87,11 @@ test('worldbook activation survives import, partial edits, export, and later pla
   assert.deepEqual(exported.entries[1].backends, ['openai'])
   assert.equal(exported.entries[1].activation, 'keywords')
   await f.request('plan', { text: '他们走进药铺。', messageId: 'shop', manual: true })
-  assert.match(f.calls[0].system, /CORE_RULE/)
-  assert.match(f.calls[0].system, /SHOP_RULE/)
+  // 规则改由 Skill（scene-image-prompt）提供，插件不再把自己那份 worldbook 规则拼进提示词。
+  assert.doesNotMatch(f.calls[0].system, /CORE_RULE/)
+  assert.match(f.calls[0].system, /加载 scene-image-prompt/, '应指示 Agent 加载规则 Skill')
+  // 命中与否仍由插件算（下面用 plannerContext 诊断验证），只是不再拼进提示词。
+  assert.doesNotMatch(f.calls[0].system, /SHOP_RULE/)
   assert.doesNotMatch(f.calls[0].system, /COMFY_ONLY/)
   await f.request('plan', { text: '他们走进树林。', messageId: 'forest', manual: true })
   assert.doesNotMatch(f.calls[1].system, /SHOP_RULE/)
@@ -118,7 +121,9 @@ test('parallel edits preserve activation, keywords, and content; invalid conditi
 test('legacy rules remain always injected and plain-text worldbooks can still be imported', async t => {
   const f = await fixture(t, [{ comment: 'Old', content: 'LEGACY_RULE' }, { comment: 'Disabled', content: 'DISABLED_RULE', enabled: false }])
   await f.request('plan', { text: '任何正文。', manual: true })
-  assert.match(f.calls[0].system, /LEGACY_RULE/)
+  // 规则不再进提示词（改由 Skill 提供），但 worldbook 本身的读取/触发判定/导入导出照旧。
+  assert.match(f.calls[0].system, /加载 scene-image-prompt/)
+  assert.doesNotMatch(f.calls[0].system, /LEGACY_RULE/)
   assert.doesNotMatch(f.calls[0].system, /DISABLED_RULE/)
   assert.equal((await f.request('worldbook-import', { worldbook: 'First rule\n\nSecond rule' })).body.count, 2)
   const after = (await f.request('worldbook-export', undefined, 'GET')).body.worldbook
