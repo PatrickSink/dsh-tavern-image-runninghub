@@ -4926,12 +4926,15 @@ function versionsOf(jobId) {
         taskPanel(),
         h('div', { style: S.row }, tabs.map(([key, label]) => h('button', { key, style: S.tab(tab === key), onClick: () => setTab(key) }, label))),
         tab === 'plan' ? planTab() : null,
-        tab === 'people' ? peopleTab() : null,
+        tab === 'people' ? h('div', null,
+          h('div', { style: { padding: '10px 12px', marginBottom: '12px', border: '1px solid #3d4a58', borderRadius: '10px', background: 'rgba(78,212,162,.06)', fontSize: '12px', lineHeight: 1.75, color: '#9fb3c8' } },
+            '插件不再使用这份人物库。角色的外观白描现在直接从 Tavern 的「设计人物」读取——去 Tavern 里设计人物，写出来的档案（含外貌与日常穿着）会自动用于生图。这一页只为查看旧数据保留，不需要再在这里维护。'),
+          peopleTab()) : null,
         tab === 'flow' ? flowTab() : null,
         tab === 'gallery' ? galleryTab() : null,
         tab === 'worldbook' ? worldbookTab() : null,
         tab === 'plugin-update' ? pluginUpdateTab() : null,
-        h('div', { style: { fontSize: '11px', color: '#9aa3b2', marginTop: '14px' } }, '人物与服装修改后请点「保存人物库」。'),
+        h('div', { style: { fontSize: '11px', color: '#9aa3b2', marginTop: '14px' } }, '生图用的人物白描来自 Tavern 的「设计人物」；这里的旧数据不再参与生图。'),
         wfGraphFile ? h(WorkflowGraphEditor, { file: wfGraphFile, post, onClose: () => setWfGraphFile(''), onSaved: () => { void openWorkflow(wfGraphFile, true) } }) : null,
       )
     }
