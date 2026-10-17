@@ -29,3 +29,6 @@ push.sh
 
 # Tavern 自动生成的防崩包装（每次扫描都会重写）
 .tavern-entry.mjs
+
+# 插件记的「见过的 gameId」小账本（运行数据）
+seen-games.json
