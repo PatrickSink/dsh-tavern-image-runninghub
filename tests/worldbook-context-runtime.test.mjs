@@ -17,12 +17,33 @@ async function fixture(t, entries = [], definitions = {}) {
   await writeFile(join(root, 'worldbook.json'), JSON.stringify({ name: 'Test', entries }))
   await writeFile(join(root, 'definitions.json'), JSON.stringify(definitions))
   const routes = new Map(), disposes = [], calls = []
+  // 规划现在走 tavern.runTask（一次性后台 Agent）。测试里把 runTask 桥到同一个 stream mock，
+  // 并保持 prompt → args.system 的语义对应（用例正是从 calls 里读 system 检查世界书注入）。
+  const streamMock = async function* (args) {
+    calls.push(args)
+    yield { type: 'text-delta', text: '<decision>skip</decision><reason>Only testing context</reason>' }
+  }
   const ctx = {
     logger: { info() {}, warn() {}, error() {} },
-    llm: { async *stream(args) {
-      calls.push(args)
-      yield { type: 'text-delta', text: '<decision>skip</decision><reason>Only testing context</reason>' }
-    } },
+    llm: { stream: streamMock },
+    tavern: {
+      apiVersion: 2,
+      async attach() { return { id: 'media-mock' } },
+      promptSection() { return () => {} },
+      onTurnSettled() { return () => {} },
+      onTimelineChanged() { return () => {} },
+      onGameRemoved() { return () => {} },
+      async list() { return [] },
+      async getTurn() { return null },
+      async readTurnData() { return null },
+      async runTask({ prompt }) {
+        let text = ''
+        for await (const chunk of streamMock({ system: prompt, text: '' })) {
+          if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+        }
+        return { text }
+      },
+    },
     webServer: { register({ path, handler }) { routes.set(path, handler); return () => routes.delete(path) } },
     inject(names, install) { if (names.every(name => this[name])) install(this) },
     effect(install) { const off = install(); if (typeof off === 'function') disposes.push(off); return off },

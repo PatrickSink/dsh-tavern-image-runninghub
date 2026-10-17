@@ -51,10 +51,40 @@ async function runtime(t, stream, definitions = {}, options = {}) {
     return new Response(JSON.stringify({ queue_running: [], queue_pending: [] }), { status: 200 })
   }
   const logger = { info() {}, warn() {}, error() {} }
+  // 生图规划现在走 tavern.runTask（一次性后台 Agent），不再直连 llm。
+  // 这里准备一个可用的 tavern：用例自带 options.tavern 时**沿用同一引用**并补上 runTask
+  // （不能新建对象 —— 用例会把 bridgeReady 写在 this 上，换引用就再也读不到）；
+  // 没自带时给一份最小实现，只够让 bridge 装载检查通过。
+  const tavernMock = options.tavern || {
+    apiVersion: 2,
+    async attach() { return { id: 'media-mock' } },
+    promptSection() { return () => {} },
+    onTurnSettled() { return () => {} },
+    onTimelineChanged() { return () => {} },
+    onGameRemoved() { return () => {} },
+    async list() { return [] },
+    async getTurn() { return null },
+    async readTurnData() { return null },
+  }
+  if (typeof tavernMock.runTask !== 'function') {
+    // 把 runTask 桥到既有的 stream mock：把整个生成器收完，拼成 agent 的最终文本。
+    // 注意：runTask 的 prompt 在旧的直连路径里对应 runPlanner 的 system，
+    // 用例的 stream mock 读的是 args.system，这里按同一语义传。
+    tavernMock.runTask = async ({ prompt }) => {
+      let text = ''
+      for await (const chunk of stream({ system: prompt, text: '', provider: 'mock', model: 'mock' }, { events, submitted, firstPrompt })) {
+        if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+      }
+      return { text }
+    }
+  }
   const ctx = {
     logger,
     llm: { stream: args => stream(args, { events, submitted, firstPrompt }) },
-    ...(options.tavern ? { tavern: options.tavern } : {}),
+    // 生图规划现在走 tavern.runTask（一次性后台 Agent），不再直连 llm。
+    // 测试里把 runTask 桥到既有的 stream mock：把整个生成器收完，拼成 agent 的最终文本。
+    // options.tavern 传进来时覆盖这里的默认实现（用于测 bridge 相关行为）。
+    ...(tavernMock ? { tavern: tavernMock } : {}),
     ...(options.attachments ? { attachments: options.attachments } : {}),
     webServer: { register({ path, handler }) { routes.set(path, handler); return () => routes.delete(path) } },
     inject(names, install) { if (names.every(name => this[name])) install(this) },
@@ -91,29 +121,17 @@ async function runtime(t, stream, definitions = {}, options = {}) {
   return { request, events, submitted, firstPrompt, root, pluginName: name, disposePlugin }
 }
 
-test('host starts the first complete image while the planner stream is still open; duplicate/extra blocks stay capped', async t => {
-  const continueStream = deferred()
-  const f = await runtime(t, async function* (_args, state) {
-    yield { type: 'text-delta', text: '<image><regex>first</regex><prompts>first' }
-    await delay(15)
-    assert.equal(state.submitted.length, 0, 'unclosed XML must not submit')
-    yield { type: 'text-delta', text: '</prompts></image>' }
-    await state.firstPrompt.promise
-    state.events.push('stream-still-open')
-    await continueStream.promise
+test('外挂规划走 tavern.runTask：一次性返回，完整块按 count 上限提交、多余块丢弃', async t => {
+  // 规划已从「直连 llm 流式」改为「tavern.runTask 一次性后台 Agent」。
+  // 随之取消的是「流还在开时就提前提交第一张」——runTask 非流式，提交统一在解析之后。
+  // 这里验证新行为：完整块才提交、超出 count 的块丢弃、不产生重复作业。
+  const f = await runtime(t, async function* () {
     yield { type: 'text-delta', text: block('first', 'first') + block('second') + block('third') }
-    state.events.push('stream-finished')
   })
-  const request = f.request('plan', { text: 'first second', messageId: 'message-1', sessionId: 'game', count: 2, manual: true })
-  await f.firstPrompt.promise
-  await delay(5)
-  assert.deepEqual(f.events.slice(0, 2), ['submit:1', 'stream-still-open'])
-  continueStream.resolve()
-  const result = await request
+  const result = await f.request('plan', { text: 'first second', messageId: 'message-1', sessionId: 'game', count: 2, manual: true })
   assert.equal(result.status, 200)
-  assert.equal(result.body.plans.length, 2)
+  assert.equal(result.body.plans.length, 2, 'count=2，第三个块应被丢弃')
   assert.deepEqual(f.submitted, ['first', 'second'])
-  assert.ok(f.events.indexOf('submit:1') < f.events.indexOf('stream-finished'))
   await delay(25)
   const jobs = Object.values(JSON.parse(await readFile(join(f.root, 'jobs-store.json'), 'utf8')))
   assert.equal(jobs.length, 2)
@@ -129,22 +147,6 @@ test('new API paths are canonical while old paths remain available for existing 
   assert.equal(legacy.status, 200)
 })
 
-test('an automatic stream retry preserves complete submitted images without duplicate GPU jobs', async t => {
-  let calls = 0
-  const f = await runtime(t, async function* () {
-    yield { type: 'text-delta', text: block('first') }
-    if (++calls === 1) throw new Error('temporary stream failure')
-    yield { type: 'text-delta', text: block('second') }
-  })
-  const input = { text: 'first second', messageId: 'retry-message' }
-  const failed = await f.request('plan', input)
-  assert.equal(failed.body.plans.length, 1)
-  assert.match(failed.body.error, /temporary stream failure/)
-  const retried = await f.request('plan', input)
-  assert.equal(retried.body.error, null)
-  assert.equal(retried.body.plans.length, 2)
-  assert.deepEqual(f.submitted, ['first', 'second'])
-})
 
 test('manual generation of the same prompt starts a fresh job instead of reusing the previous image', async t => {
   const f = await runtime(t, async function* () {
@@ -379,81 +381,23 @@ test('disposing the plugin aborts a pending official getTurn wait', async t => {
   assert.equal(getTurnCalls, 1, 'abort prevents later polling calls')
 })
 
-test('smart auto pays and attaches the first image before the planner stream ends', async t => {
-  const turn = { gameId: 'smart-game', turn: 1, textVersion: 'smart-v1', text: 'A dramatic scene.' }
-  const media = []
-  let settled
-  const tavern = {
-    apiVersion: 2,
-    promptSection() { return () => {} }, onTurnSettled(handler) { settled = handler; this.bridgeReady = true; return () => {} },
-    onTimelineChanged() { return () => {} }, onGameRemoved() { return () => {} },
-    async getTurn() { return turn }, async list() { return media },
-    async readTurnData() { return null }, async saveTurnData() {},
-    async attach({ item, textVersion }) { const row = { ...item, id: 'media-' + media.length, textVersion }; media.push(row); return { id: row.id } },
-    async update(id, patch) { Object.assign(media.find(item => item.id === id), patch) },
-    async remove(id) { const index = media.findIndex(item => item.id === id); if (index >= 0) media.splice(index, 1) },
-  }
-  let paidCalls = 0
-  const keepOpen = deferred()
-  const f = await runtime(t, async function* () {
-    yield { type: 'text-delta', text: '<decision>draw</decision><reason>first choice</reason>' + block('dramatic') }
-    await keepOpen.promise
-  }, {}, {
-    tavern, attachments: { async saveImage() { return { id: 'unused' } } }, config: { ...imageConfig, autoImageGen: true, smartImageSelection: true, characterAutoUpdate: false },
-    fetch: async () => { paidCalls++; return Response.json({ data: [{ b64_json: png }] }) },
-  })
-  turn.text = 'A dramatic scene.'
-  settled(turn)
-  await delay(80)
-  assert.equal(paidCalls, 1)
-  assert.equal(media.length, 1, 'first image should be attached while the LLM stream remains open')
-  keepOpen.resolve()
-  await delay(20)
-  assert.equal(paidCalls, 1)
-  assert.equal(media.length, 1)
-  assert.equal((await f.request('history', undefined, 'GET')).body.jobs.length, 1)
-})
 
-test('smart stream error after first image preserves its paid job and reports failure', async t => {
-  const turn = { gameId: 'smart-error-game', turn: 1, textVersion: 'smart-error-v1', text: 'A dramatic scene.' }
-  let settled, paidCalls = 0
-  const tavern = {
-    apiVersion: 2, promptSection() { return () => {} },
-    onTurnSettled(handler) { settled = handler; this.bridgeReady = true; return () => {} },
-    onTimelineChanged() { return () => {} }, onGameRemoved() { return () => {} },
-    async getTurn() { return turn }, async list() { return [] }, async readTurnData() { return null },
-    async saveTurnData() {}, async attach({ item }) { return { id: item.jobId } },
-  }
-  const f = await runtime(t, async function* () {
-    yield { type: 'text-delta', text: '<decision>draw</decision><reason>promising scene</reason>' + block('dramatic') }
-    await delay(80)
-    yield { type: 'finish', reason: { kind: 'error', failure: { message: 'planner stream failed' } } }
-  }, {}, {
-    tavern, attachments: { async saveImage() { return { id: 'unused' } } }, config: { ...imageConfig, autoImageGen: true, smartImageSelection: true, characterAutoUpdate: false },
-    fetch: async () => { paidCalls++; return Response.json({ data: [{ b64_json: png }] }) },
-  })
-  settled(turn)
-  await delay(20)
-  assert.equal(paidCalls, 1)
-  assert.equal((await f.request('history', undefined, 'GET')).body.jobs.length, 1)
-})
 
-test('a later unclosed duplicate decision stops later images and preserves the first', async t => {
-  const turn = { gameId: 'smart-queued-error', turn: 1, textVersion: 'v1', text: 'first second' }, media = []
+test('外挂规划下协议校验仍生效：decision 出现两次则整轮不提交', async t => {
+  // 流式时代靠「看到第二个 <decision> 开头就判冲突」来拦截；runTask 非流式后没有这种
+  // 中途观测，校验改为看**闭合块**的成对情况。这里用两个都闭合的 decision 触发它，
+  // 确认无效输出仍然一张都不提交（这是新机制下等价的安全网）。
+  const turn = { gameId: 'smart-dup-decision', turn: 1, textVersion: 'v1', text: 'first second' }, media = []
   let settled
   const tavern = { apiVersion: 2, promptSection() { return () => {} }, onTurnSettled(handler) { settled = handler; this.bridgeReady = true; return () => {} }, onTimelineChanged() { return () => {} }, onGameRemoved() { return () => {} }, async getTurn() { return turn }, async list() { return media }, async readTurnData() { return null }, async saveTurnData() {}, async attach({ item }) { media.push(item); return { id: item.jobId } }, async update() {}, async remove() {} }
-  const paidFirst = deferred()
-  const f = await runtime(t, async function* (_args, state) {
-    yield { type: 'text-delta', text: '<decision>draw</decision><reason>two distinct views</reason>' + block('first view', 'first') }
-    await paidFirst.promise
-    yield { type: 'text-delta', text: '<decision>' + block('second view', 'second') }
+  const f = await runtime(t, async function* () {
+    yield { type: 'text-delta', text: '<decision>draw</decision><reason>two distinct views</reason><decision>draw</decision><reason>again</reason>' + block('first view', 'first') + block('second view', 'second') }
   }, {}, { tavern, attachments: { async saveImage() { return { id: 'unused' } } }, config: { ...imageConfig, autoImageGen: true, smartImageSelection: true, characterAutoUpdate: false },
-    fetch: async () => { paidFirst.resolve(); return Response.json({ data: [{ b64_json: png }] }) } })
+    fetch: async () => Response.json({ data: [{ b64_json: png }] }) })
   settled(turn)
-  await paidFirst.promise
-  await delay(100)
-  assert.equal((await f.request('history', undefined, 'GET')).body.jobs.length, 1)
-  assert.equal(media.length, 1)
+  await delay(200)
+  assert.equal((await f.request('history', undefined, 'GET')).body.jobs.length, 0, 'decision 重复=无效输出，一张都不提交')
+  assert.equal(media.length, 0)
 })
 
 test('smart skip submits nothing and same-chunk duplicate decisions reject before payment', async t => {
@@ -1061,3 +1005,10 @@ test('graph route saves parameters with revision checking and rejects traversal'
   assert.equal((await f.request('workflow-graph', { file: '../config.json' })).status, 400)
   assert.equal((await f.request('workflow-graph', {}, 'POST', { origin: 'https://bad.test' })).status, 403)
 })
+
+// 已移除的测试（规划改为 tavern.runTask 一次性返回后，这些「流式特有」前提不再存在）：
+//   · an automatic stream retry preserves complete submitted images without duplicate GPU jobs
+//   · smart auto pays and attaches the first image before the planner stream ends
+//   · smart stream error after first image preserves its paid job and reports failure
+// 它们验证的是 onDelta 流式路径下的重试与「提前提交」。runTask 非流式，整轮结果一次返回，
+// 提交统一在解析之后，因此不存在「流中途失败但已有图已付费」这类中间态。
