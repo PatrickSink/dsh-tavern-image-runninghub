@@ -169,14 +169,15 @@ test('empty or incomplete output reports a retryable planning error with no GPU 
   assert.equal(f.submitted.length, 0)
 })
 
-test('attach-turn applies a permanent appearance update to this image and reuses it on the next turn', async t => {
+test('attach-turn 两轮都正常挂图；人物外貌档案不再由插件写入', async t => {
+  // 插件原先会把 <character_updates> 合并进自己的外貌快照，供下一轮复用。
+  // 现在这套已移除：人物外貌由 Agent 自己读 / 写 Tavern 的设计人物档案。
+  // 这里验证剩下的职责边界 —— 每轮都能规划并挂上图，且插件**不碰**人物库文件。
   const state = {
     current: { gameId: 'story-game', turn: 1, textVersion: 'text-v1', text: 'Luna cut her hair permanently.', card: { id: 'card-1', name: 'Luna card' } },
     snapshots: [], media: [], systems: [], imageRequests: [],
   }
   let timeline
-  let gatedHistoryRead = null
-  let historySaves = 0
   const tavern = {
     apiVersion: 2,
     promptSection() { return () => {} },
@@ -185,14 +186,8 @@ test('attach-turn applies a permanent appearance update to this image and reuses
     onGameRemoved() { return () => {} },
     async getTurn({ turn }) { return state.current.turn === turn ? state.current : null },
     async list() { return state.media },
-    async readTurnData({ turn }) {
-      const gate = gatedHistoryRead
-      if (gate) { gatedHistoryRead = null; gate.started.resolve(); await gate.release.promise }
-      return state.snapshots.filter(item => item.turn <= turn).at(-1) ?? null
-    },
+    async readTurnData() { return state.snapshots.at(-1) ?? null },
     async saveTurnData({ turn, textVersion, data }) {
-      if (state.current.turn !== turn || state.current.textVersion !== textVersion) throw new Error('stale version')
-      historySaves++
       state.snapshots = state.snapshots.filter(item => item.turn !== turn)
       state.snapshots.push({ turn, textVersion, data })
     },
@@ -206,7 +201,7 @@ test('attach-turn applies a permanent appearance update to this image and reuses
   const original = { id: 'role-1', name: 'Luna', match: 'luna', traits: { face: 'black hair, blue eyes' } }
   const f = await runtime(t, async function* (args) {
     state.systems.push(args.system)
-    yield { type: 'text-delta', text: '<character_updates>{"updates":[{"id":"role-1","name":"Luna","permanent":true,"fields":{"face":"white hair, blue eyes"},"reason":"正文明确写她永久剪短头发"}]}</character_updates><decision>draw</decision><reason>新的外观变化</reason>' + block('${"name":"Luna","upperBody":"sfw"}$', 'Luna') }
+    yield { type: 'text-delta', text: '<decision>draw</decision><reason>新的外观变化</reason>' + block('Luna by the window', 'Luna') }
   }, { characters: [original] }, {
     tavern,
     attachments: { async saveImage({ data }) { return { id: 'attachment-' + data.byteLength } } },
@@ -219,73 +214,24 @@ test('attach-turn applies a permanent appearance update to this image and reuses
       return Response.json({ data: [{ b64_json: png }] })
     },
   })
+
   const first = await f.request('attach-turn', { gameId: 'story-game', turn: 1 })
   assert.equal(first.body.ok, true)
   assert.equal(first.body.attached, 1)
-  assert.match(state.imageRequests[0].prompt, /white hair/)
-  assert.match(state.imageRequests[0].prompt, /blue eyes/)
-  assert.equal(JSON.parse(await readFile(join(f.root, 'definitions.json'), 'utf8')).characters[0].traits.face, 'black hair, blue eyes')
-  assert.equal(state.snapshots[0].data.characters['role-1'].traits.face, 'white hair, blue eyes')
+  // 提示词里应指示 Agent 去读设计人物档案，而不是靠插件注入的白描
+  assert.match(state.systems[0], /character_design_read/)
+  assert.doesNotMatch(state.systems[0], /<可用绘图角色列表>/)
 
-  const turn1 = state.current
   state.current = { ...state.current, turn: 2, textVersion: 'text-v2', text: 'Luna looks at the window.' }
   const second = await f.request('attach-turn', { gameId: 'story-game', turn: 2 })
   assert.equal(second.body.ok, true)
-  assert.match(state.systems[1], /white hair, blue eyes/)
-  assert.match(state.imageRequests[1].prompt, /white hair/)
-  assert.match(state.imageRequests[1].prompt, /blue eyes/)
-  assert.equal(state.snapshots.length, 2)
-  const history = await f.request('character-history?gameId=story-game', undefined, 'GET')
-  assert.equal(history.body.available, true)
-  assert.equal(history.body.currentTurn, 2)
-  const expectedChange = history.body.snapshot.changes[0]
-  const restored = await f.request('character-history', { gameId: 'story-game', changeIndex: 0, expectedChange })
-  assert.equal(restored.body.ok, true)
-  const currentSnapshot = await tavern.readTurnData({ turn: 2 })
-  assert.equal(currentSnapshot.data.characters['role-1'].traits.face, 'black hair, blue eyes')
-  assert.equal(currentSnapshot.data.changes.at(-1).reason, '玩家从角色历史手动恢复')
-  assert.equal(currentSnapshot.data.changes.at(-1).turn, 2)
-  currentSnapshot.data.changes[0] = { ...currentSnapshot.data.changes[0], after: 'different history event' }
-  const staleRestore = await f.request('character-history', { gameId: 'story-game', changeIndex: 0, expectedChange })
-  assert.equal(staleRestore.status, 400)
-  assert.match(staleRestore.body.error, /已变化/)
+  assert.equal(state.systems.length, 2, '每轮各规划一次')
+  assert.match(state.imageRequests[1].prompt, /Luna/)
 
-  state.current = turn1
-  timeline({ gameId: 'story-game', kind: 'rollback', turn: 1 })
-  const rolledBack = await f.request('character-history?gameId=story-game', undefined, 'GET')
-  assert.equal(rolledBack.body.currentTurn, 1)
-  assert.equal(rolledBack.body.snapshot.characters['role-1'].traits.face, 'white hair, blue eyes')
-
-  const readGate = { started: deferred(), release: deferred() }
-  gatedHistoryRead = readGate
-  const saveCount = historySaves
-  const restoreAfterTurnChange = f.request('character-history', {
-    gameId: 'story-game', changeIndex: 0, expectedChange: rolledBack.body.snapshot.changes[0],
-  })
-  await readGate.started.promise
-  timeline({ gameId: 'story-game', kind: 'edit', turn: 2 })
-  readGate.release.resolve()
-  const rejectedStaleTurnRestore = await restoreAfterTurnChange
-  assert.equal(rejectedStaleTurnRestore.status, 400)
-  assert.match(rejectedStaleTurnRestore.body.error, /轮次已变化/)
-  assert.equal(historySaves, saveCount, 'a stale-turn restore must not write the old snapshot')
+  // 插件不再写人物库（设计人物档案由 Tavern 与 Agent 负责）
+  assert.equal(JSON.parse(await readFile(join(f.root, 'definitions.json'), 'utf8')).characters[0].traits.face, 'black hair, blue eyes')
 })
 
-test('missing story history output is saved with a visible warning', async t => {
-  const state = { current: { gameId: 'warning-game', turn: 1, textVersion: 'warning-v1', text: 'A quiet scene.' }, saved: null }
-  const tavern = {
-    apiVersion: 2,
-    promptSection() { return () => {} }, onTurnSettled() { this.bridgeReady = true; return () => {} },
-    onTimelineChanged() { return () => {} }, onGameRemoved() { return () => {} },
-    async attach() { return { id: 'unused' } },
-    async getTurn() { return state.current }, async list() { return [] },
-    async readTurnData() { return state.saved }, async saveTurnData(input) { state.saved = { turn: input.turn, textVersion: input.textVersion, data: input.data } },
-  }
-  const f = await runtime(t, async function* () { yield { type: 'text-delta', text: '' } }, {}, { tavern, attachments: { async saveImage() { return { id: 'unused' } } } })
-  await f.request('attach-turn', { gameId: 'warning-game', turn: 1 })
-  const history = await f.request('character-history?gameId=warning-game', undefined, 'GET')
-  assert.match(history.body.snapshot.warning, /缺少角色更新块/)
-})
 
 test('attach-turn waits for official getTurn data and coalesces with settled auto planning', async t => {
   const turn = { gameId: 'wait-auto', turn: 1, textVersion: 'wait-v1', text: 'A complete settled scene.' }

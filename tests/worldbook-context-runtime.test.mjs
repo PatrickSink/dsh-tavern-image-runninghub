@@ -142,14 +142,12 @@ test('backend planning uses one DSH model call per round and reports character c
   const marker = '\n\n<本轮上下文>\n'
   assert.ok(one.includes(marker), 'stable prefix should be explicitly separated from the turn context')
   assert.equal(one.split(marker)[0], two.split(marker)[0])
-  assert.match(one, /blue eyes/)
-  assert.doesNotMatch(one, /green eyes/)
-  assert.match(two, /green eyes/)
-  assert.doesNotMatch(two, /blue eyes/)
+  // 人物白描不再由插件注入（Agent 自己读设计人物档案），所以这里不再断言 traits 出现在提示词里。
+  assert.doesNotMatch(one, /blue eyes/)
+  assert.doesNotMatch(two, /green eyes/)
   const state = (await f.request('state', undefined, 'GET')).body
   assert.ok(state.plannerContext.staticChars > 0)
   assert.ok(state.plannerContext.dynamicChars > 0)
   assert.equal(state.plannerContext.bodyChars, '秦雨薇来到药铺里。'.length)
-  assert.equal(state.plannerContext.includedCharacters.length, 1)
   assert.equal(JSON.stringify(state.plannerContext).includes('green eyes'), false)
 })
