@@ -2806,6 +2806,24 @@ function versionsOf(jobId) {
             ['openai', 'novelai', 'sdwebui', 'qwen'].includes(backend) ? optionField('size', '尺寸覆盖（可选）', '例如：1024x1536') : null,
             backend === 'seedream' ? optionField('size', '输出尺寸（可选）', '1K、1.5K、2K 或 2048x2048') : null,
             backend === 'gemini' ? optionField('imageSize', '输出分辨率（可选）', '1K、2K 或 4K') : null,
+            backend === 'runninghub' ? h('div', null,
+              optionField('workflowId', 'RunningHub 工作流编号（二选一）', '例如：1904136902449209346'),
+              h('div', { style: { marginBottom: '10px' } },
+                label('本地工作流 JSON（可选，粘贴 API 格式的完整 JSON；填了就覆盖上面那条编号）'),
+                h('textarea', { 'aria-label': 'RunningHub 工作流 JSON', rows: 6, value: String((localFields.options || {}).workflowJson ?? ''),
+                  placeholder: '{ "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "...", "clip": ["4", 1] } }, ... }',
+                  style: full({ height: 'auto', minHeight: '110px', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: '12px', lineHeight: 1.5, resize: 'vertical' }),
+                  onChange: e => updateOption('workflowJson', e.target.value) })),
+              h('div', { style: { marginBottom: '10px' } },
+                label('节点字段映射（可选，留空就按工作流自动认）'),
+                h('textarea', { 'aria-label': 'RunningHub 节点映射', rows: 3, value: String((localFields.options || {}).nodeBindings ?? ''),
+                  placeholder: '{ "prompt": [{"node":"6","input":"text"}], "negative": [{"node":"7","input":"text"}] }',
+                  style: full({ height: 'auto', minHeight: '64px', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: '12px', lineHeight: 1.5, resize: 'vertical' }),
+                  onChange: e => updateOption('nodeBindings', e.target.value) })),
+              h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '8px' } },
+                optionField('instanceType', '实例类型（可选）', 'default / plus / ultra'),
+                optionField('size', '尺寸覆盖（可选）', '例如：1024x1536'),
+                optionField('pollIntervalMs', '轮询间隔毫秒（可选）', '5000', 'number'))) : null,
             ['gemini', 'novelai', 'sdwebui', 'qwen'].includes(backend) ? optionField('aspectRatio', '画面比例覆盖（可选）', '例如：2:3') : null,
             generatePathPlaceholder ? optionField('generatePath', '生成接口路径（高级）', generatePathPlaceholder) : null,
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '12px' } },
@@ -2840,7 +2858,7 @@ function versionsOf(jobId) {
                 channelTestStatuses[channel.id]?.checking ? '正在探测渠道…' : channelTestStatuses[channel.id]?.status === 'reachable' && channelTestStatuses[channel.id]?.ok ? ('连接可用' + (channelTestStatuses[channel.id].message ? '：' + channelTestStatuses[channel.id].message : '')) : channelTestStatuses[channel.id]?.status === 'configured' ? ('已配置，尚未验证：' + (channelTestStatuses[channel.id].message || '此服务没有可安全探测的接口。')) : channelTestStatuses[channel.id] ? ('无法连接：' + (channelTestStatuses[channel.id].message || channelTestStatuses[channel.id].error || '检查地址与鉴权')) : (channel.hasApiKey || channel.hasPassword ? '已配置，尚未验证' : '填写地址和鉴权后保存并测试')),
             ),
             h('div', { style: { fontSize: '11px', color: '#9aa3b2', marginTop: '8px', lineHeight: 1.55 } },
-              backend === 'novelai' ? 'NovelAI 使用 API Key，不需要账户 OAuth 登录；密钥可从官方账户获取。' : backend === 'openai' ? '支持 OpenAI 图片 API 和兼容中转；建议模型 ID 来自服务端模型列表，兼容中转可修改生成路径。' : backend === 'grok' ? 'Grok 当前由服务端模型决定尺寸和比例；插件不会发送尺寸覆盖参数。' : backend === 'qwen' ? '百炼 API 根地址必须匹配账号所在地域和控制台提供的工作空间地址；请从平台控制台复制完整区域端点。' : '可填写服务商或自建中转的完整 API 根地址；测试只检查连接与模型信息，不会付费生成图片。复制渠道会复制参数，但需要重新填写密钥。'),
+              backend === 'novelai' ? 'NovelAI 使用 API Key，不需要账户 OAuth 登录；密钥可从官方账户获取。' : backend === 'openai' ? '支持 OpenAI 图片 API 和兼容中转；建议模型 ID 来自服务端模型列表，兼容中转可修改生成路径。' : backend === 'grok' ? 'Grok 当前由服务端模型决定尺寸和比例；插件不会发送尺寸覆盖参数。' : backend === 'qwen' ? '百炼 API 根地址必须匹配账号所在地域和控制台提供的工作空间地址；请从平台控制台复制完整区域端点。' : backend === 'runninghub' ? 'RunningHub 用云端 ComfyUI 跑工作流：地址填 www.runninghub.cn 或 www.runninghub.ai（两站账号与 Key 不通用）。API Key 拿的是开放接口 Key，不是网页登录账号。工作流可以填平台上的编号，也可以直接粘贴本地导出的 API 格式 JSON（必须是 API 格式，ComfyUI 界面导出的画布格式缺输入定义，云端不会自动补）。加密访问的工作流把访问密码填在「Basic 密码」那一栏。RunningHub 没有无计费的只读探测接口，测试只核对配置是否成形，不会提交任务。' : '可填写服务商或自建中转的完整 API 根地址；测试只检查连接与模型信息，不会付费生成图片。复制渠道会复制参数，但需要重新填写密钥。'),
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', flexWrap: 'wrap' } },
               h('label', { style: { fontSize: '12px', color: '#b2bdcc' } }, '同时生成', h('input', { 'aria-label': '同时生成', type: 'number', min: 1, max: 4, value: Number(config.imageConcurrency || 2), style: Object.assign({}, S.input, { width: '70px', marginLeft: '8px' }), onChange: e => setCfg({ imageConcurrency: Math.max(1, Math.min(4, Number(e.target.value) || 1)) }) })),
               h('button', { style: buttonStyle, onClick: () => save({ imageConcurrency: Math.max(1, Math.min(4, Number(config.imageConcurrency || 2))) }) }, '保存并发设置'),
@@ -3595,7 +3613,7 @@ function versionsOf(jobId) {
       async function deleteJobBatch(ids) {
         const list = (Array.isArray(ids) ? ids : []).filter(Boolean)
         if (!list.length) { if (typeof showToast === 'function') showToast('没有选中任何图', 'fail'); return }
-        if (!confirm('删除选中的 ' + list.length + ' 张图？缓存文件也会一起删掉。')) return
+        if (!confirm('删除选中的 ' + list.length + ' 条记录？缓存文件会删掉，正文里对应的插图也会一起摘掉。')) return
         let ok = 0
         for (const id of list) {
           try {
@@ -3612,7 +3630,7 @@ function versionsOf(jobId) {
       /** 删除一张历史图（连带缓存文件与计划里的引用）。 */
       async function deleteJob(jobId) {
         if (!jobId) return
-        if (!confirm('删除这张图？缓存文件也会一起删掉。')) return
+        if (!confirm('删除这条记录？缓存文件会删掉，正文里对应的插图也会一起摘掉。')) return
         try {
           const r = await post('/delete-job', { jobId: String(jobId) })
           if (!r?.ok) { if (typeof showToast === 'function') showToast('删除失败：' + (r?.error || ''), 'fail'); return }
@@ -4350,7 +4368,9 @@ function versionsOf(jobId) {
 
       // ---- 历史图 ----
       function galleryTab() {
-        const done = historyJobs.filter(function (job) { return job.hasImage })
+        // 全部任务都列出来：失败、取消、状态待确认这些没有图，但也要能看见、能删掉。
+        const done = historyJobs
+        const hasImg = function (job) { return job.hasImage }
         const tiles = done.map(function (job) {
           return h('div', {
             key: job.id,
@@ -4361,7 +4381,7 @@ function versionsOf(jobId) {
               boxShadow: gallerySelect && galleryPicked[job.id] ? '0 0 0 3px rgba(106,168,255,.25)' : 'none',
             },
           },
-            h('img', {
+            hasImg(job) ? h('img', {
               src: BASE + '/jobs?id=' + encodeURIComponent(job.id) + '&image=1',
               loading: 'lazy',
               decoding: 'async',
@@ -4373,7 +4393,7 @@ function versionsOf(jobId) {
                 if (gallerySelect) { setGalleryPicked(cur => Object.assign({}, cur, { [job.id]: !cur[job.id] })); return }
                 if (typeof openImageOverlay !== 'function') return
                 // 用「所有历史图」作为翻页列表，并定位到点的这一张 —— 这样打开第一张就能一路翻到最后
-                const all = done.map(function (j) { return j.id })
+                const all = done.filter(hasImg).map(function (j) { return j.id })
                 const at = Math.max(0, all.indexOf(job.id))
                 openImageOverlay({ open: true, jobIds: all.length ? all : [job.id], note: '历史图（' + (at + 1) + '/' + all.length + '）', working: false, index: at })
               },
@@ -4385,7 +4405,7 @@ function versionsOf(jobId) {
                   x: event.clientX, y: event.clientY,
                   items: [
                     { icon: '🖼', label: '查看大图', onClick: function () {
-                        const all = done.map(function (j) { return j.id })
+                        const all = done.filter(hasImg).map(function (j) { return j.id })
                         const at = Math.max(0, all.indexOf(job.id))
                         openImageOverlay({ open: true, jobIds: all.length ? all : [job.id], note: '历史图（' + (at + 1) + '/' + all.length + '）', working: false, index: at })
                       } },
@@ -4403,7 +4423,16 @@ function versionsOf(jobId) {
                   ],
                 })
               },
-            }),
+            }) : h('div', {
+              title: '这张没有出图；点这里删除记录',
+              style: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', width: '100%', aspectRatio: '3 / 4', padding: '10px', boxSizing: 'border-box', textAlign: 'center', cursor: 'pointer', background: '#1a1d24', color: '#9aa3b2' },
+              onClick: function (e) { e.stopPropagation(); deleteJob(job.id) },
+            },
+              h('span', { style: { fontSize: '18px' } }, job.state === 'failed' ? '⚠️' : job.state === 'uncertain' ? '❓' : '⏳'),
+              h('span', { style: { fontSize: '11px', color: job.state === 'failed' ? '#f28b8b' : '#e2b93b' } },
+                job.state === 'failed' ? '失败' : job.state === 'uncertain' ? '状态待确认' : job.state === 'cancelled' ? '已取消' : '未出图'),
+              (job.error || job.status) ? h('span', { style: { fontSize: '10px', lineHeight: 1.4, maxHeight: '5.6em', overflow: 'hidden', wordBreak: 'break-word', color: '#7f8899' } }, String(job.error || job.status).slice(0, 90)) : null,
+              h('span', { style: { fontSize: '10px', color: '#6aa8ff', marginTop: '2px' } }, '点这里删除')),
             gallerySelect ? h('div', {
               style: { position: 'absolute', top: '6px', left: '6px', width: '24px', height: '24px', borderRadius: '6px', border: '1px solid rgba(255,255,255,.5)', background: galleryPicked[job.id] ? '#6aa8ff' : 'rgba(0,0,0,.5)', color: '#fff', fontSize: '15px', lineHeight: '22px', textAlign: 'center' },
             }, galleryPicked[job.id] ? '✓' : '') : null,
@@ -4444,6 +4473,20 @@ function versionsOf(jobId) {
               onClick: function () { deleteJobBatch(Object.keys(galleryPicked).filter(k => galleryPicked[k])) },
             }, '🗑 删除选中（' + Object.keys(galleryPicked).filter(k => galleryPicked[k]).length + '）') : null,
             historyNote ? h('span', { style: { fontSize: '12px', color: '#9aa3b2' } }, historyNote) : null,
+            h('button', {
+              style: Object.assign({}, buttonStyle, { fontSize: '12px' }),
+              title: '摘掉正文里那些「图还在、作业记录已经没了」的残留插图',
+              onClick: async function () {
+                try {
+                  const r = await post('/prune-media', {})
+                  if (typeof showToast === 'function') {
+                    if (!r?.ok) showToast('清理失败：' + (r?.error || ''), 'fail')
+                    else if (r.removed) showToast('已从正文摘掉 ' + r.removed + ' 张残留插图')
+                    else showToast('正文里没有残留插图')
+                  }
+                } catch (error) { if (typeof showToast === 'function') showToast('清理失败：' + (error?.message ?? error), 'fail') }
+              },
+            }, '🧹 清理正文残留'),
           ),
           h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px', marginTop: '12px' } },
             tiles.length ? tiles : h('div', { style: { fontSize: '12px', color: '#9aa3b2', padding: '14px' } }, historyNote || '还没有图片')),
@@ -5288,21 +5331,3 @@ function versionsOf(jobId) {
     return module.exports
   },
 })
-            backend === 'runninghub' ? h('div', null,
-              optionField('workflowId', 'RunningHub 工作流编号（二选一）', '例如：1904136902449209346'),
-              h('div', { style: { marginBottom: '10px' } },
-                label('本地工作流 JSON（可选，粘贴 API 格式的完整 JSON；填了就覆盖上面那条编号）'),
-                h('textarea', { 'aria-label': 'RunningHub 工作流 JSON', rows: 6, value: String((localFields.options || {}).workflowJson ?? ''),
-                  placeholder: '{ "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "...", "clip": ["4", 1] } }, ... }',
-                  style: full({ height: 'auto', minHeight: '110px', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: '12px', lineHeight: 1.5, resize: 'vertical' }),
-                  onChange: e => updateOption('workflowJson', e.target.value) })),
-              h('div', { style: { marginBottom: '10px' } },
-                label('节点字段映射（可选，留空就按工作流自动认）'),
-                h('textarea', { 'aria-label': 'RunningHub 节点映射', rows: 3, value: String((localFields.options || {}).nodeBindings ?? ''),
-                  placeholder: '{ "prompt": [{"node":"6","input":"text"}], "negative": [{"node":"7","input":"text"}] }',
-                  style: full({ height: 'auto', minHeight: '64px', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: '12px', lineHeight: 1.5, resize: 'vertical' }),
-                  onChange: e => updateOption('nodeBindings', e.target.value) })),
-              h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '8px' } },
-                optionField('instanceType', '实例类型（可选）', 'default / plus / ultra'),
-                optionField('size', '尺寸覆盖（可选）', '例如：1024x1536'),
-                optionField('pollIntervalMs', '轮询间隔毫秒（可选）', '5000', 'number'))) : null,
