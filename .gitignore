@@ -23,3 +23,6 @@ rollback-tavern.mjs
 
 # 个人世界书：人物库、服装库、生图规则都是使用者自己的数据，不进公开仓库
 worldbook.json
+
+# 本 fork 的本地推送脚本
+push.sh

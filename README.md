@@ -1,5 +1,18 @@
 # DSH Tavern Image
 
+> ## ⚠️ 这是 fork，不是上游
+>
+> 上游是 [weixinlll/dsh-tavern-image](https://github.com/weixinlll/dsh-tavern-image)（MIT）。
+> 本仓库在 `v2.5.4.3` 基础上只加了**两样东西**，其余原样保留：
+>
+> 1. **RunningHub 云端 ComfyUI 渠道** —— 让插件的规划能力跑在 RunningHub 的工作流上
+> 2. **修掉两个删除相关的缺口** —— 删记录时会一并摘掉正文插图；失败记录在图库里能看见、能删
+>
+> 提交历史分三段，想只要其中一部分就挑对应那个 commit：
+> `chore: import`（上游原版）→ `feat(channel)`（渠道）→ `fix: 删除记录…`（修复）。
+>
+> 安装见下方「安装与第一次出图」，渠道配置见「RunningHub 渠道」一节。
+
 给 DSH Tavern 用的剧情配图插件。它读取已经完成的正文，挑选适合画成插图的场景，再交给你配置的生图服务生成，按剧情位置插回消息里。
 
 可以用本地 ComfyUI、SD WebUI / Forge，也可以接 NovelAI、OpenAI Images、Gemini 等在线服务。人物资料、画风、提示词规则和图片记录在同一个面板里管理，适合给长篇角色扮演和故事配图。
@@ -210,8 +223,59 @@ node $dshCli plugin --profile tavern add "link:$env:USERPROFILE/.dsh/profile-dat
 | Seedream / 火山方舟 | Ark 图片接口 |
 | 百炼 Qwen-Image | DashScope 图片接口 |
 | SD WebUI / Forge | `sdapi/v1/txt2img` |
+| RunningHub 云端 ComfyUI | 平台开放接口 + 工作流编号或 API 格式 JSON（**本 fork 新增**） |
 
 同一个提供商可以配置多条渠道，分别保存名称、地址、模型和鉴权。可以在自己的服务和不同中转之间切换，无需把原配置删掉再重新填写。复制渠道后，需要给副本填写自己的密钥。
+
+## RunningHub 渠道
+
+> 本 fork 新增。上游没有这个渠道。
+
+生图渠道选「RunningHub 云端 ComfyUI」，然后：
+
+| 字段 | 填什么 |
+|---|---|
+| API 根地址 | `https://www.runninghub.cn`（海外站 `https://www.runninghub.ai`；两站账号与 Key 不通用） |
+| API Key | RunningHub 控制台的**开放接口 Key**，不是网页登录账号 |
+| 工作流编号 | 在 RunningHub 里通过 API 调用的那个工作流 ID（二选一） |
+| 本地工作流 JSON | 粘贴本地导出的 **API 格式** JSON（二选一） |
+| 节点字段映射 | 可选。留空就按工作流自动认 |
+| 实例类型 | 可选。`default`(24G) / `plus`(48G) / `ultra`(84G) |
+| Basic 用户名/密码 | 加密访问的工作流，把**访问密码**填在密码那一栏 |
+
+### 工作流两种填法怎么选
+
+**两个都填的时候，用平台编号那份，JSON 只用来推断节点绑定**（不是 bug，是实测出来的正确做法）：
+
+- 从 RunningHub 界面导出的 API 格式 JSON，尺寸等字段往往是 `%width%` 这类**可变占位符**，由它自己的对话框替换。原样提交上去会被平台拒掉，报 `433 prompt_outputs_failed_validation`。
+- 只发 `workflow` 而不发 `workflowId`，会触发平台的必填校验，报 `must not be null`。
+- 所以配了编号就只发编号（用平台存的那份干净定义），JSON 退居「拿来认节点 ID」。
+
+必须是 **API 格式**，不是 ComfyUI 界面导出的画布格式——本地 ComfyUI 收到画布格式会自己从 `/object_info` 补输入，RunningHub 的 REST 接口不会补。
+
+### 参数怎么进工作流
+
+`nodeInfoList` 由插件组装。节点绑定优先用你填的「节点字段映射」，没填就按工作流自动认：
+
+- **提示词**：内容最长的 `CLIPTextEncode` 当正面，其余当负面（`ConditioningZeroOut` 之类不算）
+- **尺寸**：`EmptyLatentImage` 的 `width` / `height`
+- **采样**：`KSampler` 的 `seed` / `steps` / `cfg`
+
+显式映射的写法：
+
+```json
+{ "prompt": [{"node":"6","input":"text"}], "negative": [{"node":"7","input":"text"}] }
+```
+
+正面与负面提示词会**分流写进各自的节点**，不再拼成 `Avoid:` 塞在同一个节点里。
+
+覆盖优先级：渠道的「尺寸覆盖」> 本轮请求的尺寸 > 工作流原值。
+
+### 几个实测过的坑
+
+- **轮询的 taskId 必须原样发字符串**。平台编号是 19 位，转成数字会丢精度，之后永远匹配不到任务。
+- **RunningHub 没有无计费的只读探测接口**，所以「测试连接」只核对配置是否成形，会说「已配置，尚未验证」，不会提交任务。
+- 出图等待时间取决于平台排队，可能几分钟。超时后任务**可能仍在平台执行**，别急着重跑，先到 RunningHub 核对。
 
 这里接的是平台 API，网页登录账号不能代替 API Key。第三方服务只有在兼容相应协议时才能使用；单有网址和密钥，并不代表所有平台都能接入。
 
