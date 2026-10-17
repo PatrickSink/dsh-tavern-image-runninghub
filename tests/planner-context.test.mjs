@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeEntryActivation, selectPlannerContext } from '../lib/planner-context.js'
+import { normalizeEntryActivation, selectPlannerContext, charactersFromDesignLore } from '../lib/planner-context.js'
 
 const chars = { characters: [
   { id: 'a', name: '安', match: 'Ann, Ann Lee', traits: { face: 'A face' } },
@@ -88,4 +88,61 @@ test('blank content is omitted from diagnostics instead of counted as included',
   const result = selectPlannerContext({ entries: [{ index: 0, comment: 'empty', content: '  ' }] })
   assert.deepEqual(result.diagnostics.includedEntries, [])
   assert.deepEqual(result.diagnostics.omittedEntries, [{ index: 0, comment: 'empty', reason: 'empty-content' }])
+})
+
+// ── 人物白描改从本体的「设计人物」来 ─────────────────────────────────────
+// 设计人物是本局世界书里的条目（标题「人物设计 · <名>」），正文由 character-design
+// skill 按固定五段写出。下面这条用的是真实数据形状，含那个很长的「剧情作用…」标签。
+
+const designEntry = (name, fields) => ({
+  title: '人物设计 · ' + name,
+  keys: [name],
+  constant: false,
+  content: ['人物：' + name, ...Object.entries(fields).map(([label, value]) => label + '：' + value)].join('\n\n'),
+})
+
+test('设计人物条目 → 人物白描：按标题前缀识别，分字段解析', () => {
+  const lore = [
+    designEntry('刀疤番僧', {
+      '身份': '欢喜教在中原暗线上最实的经手人，认差事不认人情',
+      '性格': '对人怀有猎户看牲口般的耐心，不急于一时之欢',
+      '外貌': '年约五十，身量高瘦如枯竹，脊背却笔直。面上自眉骨斜至嘴角一道旧疤；身着暗黄旧僧袍，颈挂乌木念珠，足踏厚底麻鞋',
+      '说话方式': '汉话说得生硬，字字咬重，句子短而硬',
+      '剧情作用与可能的发展（不是已发生的事实）': '把林凡的一腔血气按回泥里，逼出他第一次惨败',
+    }),
+    { title: '宗门规矩', keys: ['宗门'], constant: true, content: '这不是人物条目，不该被当成角色' },
+    { title: '人物设计 · 空条目', keys: [], constant: false, content: '' },
+  ]
+  const out = charactersFromDesignLore(lore)
+
+  assert.equal(out.length, 1, '只应识别出 1 个设计人物')
+  const monk = out[0]
+  assert.equal(monk.name, '刀疤番僧')
+  assert.equal(monk.match, '刀疤番僧')
+  assert.equal(monk.enabled, true)
+  // 外貌整段进 face（含日常穿着），这是唯一的画面依据
+  assert.match(monk.traits.face, /身量高瘦如枯竹/)
+  assert.match(monk.traits.face, /暗黄旧僧袍/)
+  // 身份与性格进 feature，供规划模型判断气质
+  assert.match(monk.traits.feature, /欢喜教/)
+  assert.match(monk.traits.feature, /猎户看牲口/)
+  // 很长的标签也要认出来
+  assert.ok(!/剧情作用/.test(monk.traits.face), '剧情作用不该混进外貌')
+})
+
+test('设计人物：姓名以正文「人物：」行为准，同一名字只取一次', () => {
+  const lore = [
+    { title: '人物设计 · 旧标题', keys: ['叶冰'], constant: false, content: '人物：叶冰\n\n外貌：白衣，削肩，眉目很冷' },
+    { title: '人物设计 · 叶冰', keys: ['叶冰'], constant: false, content: '人物：叶冰\n\n外貌：重复条目' },
+  ]
+  const out = charactersFromDesignLore(lore)
+  assert.equal(out.length, 1)
+  assert.equal(out[0].name, '叶冰', '以正文里的名字为准')
+  assert.match(out[0].traits.face, /白衣/)
+})
+
+test('设计人物：没有设计条目时返回空，不报错', () => {
+  assert.deepEqual(charactersFromDesignLore([]), [])
+  assert.deepEqual(charactersFromDesignLore(null), [])
+  assert.deepEqual(charactersFromDesignLore([{ title: '别的条目', content: '正文' }]), [])
 })
