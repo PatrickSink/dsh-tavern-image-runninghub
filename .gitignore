@@ -26,3 +26,6 @@ worldbook.json
 
 # 本 fork 的本地推送脚本
 push.sh
+
+# Tavern 自动生成的防崩包装（每次扫描都会重写）
+.tavern-entry.mjs
