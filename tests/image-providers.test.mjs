@@ -436,3 +436,25 @@ test('RunningHub: 缺工作流或 Key 时给出可读的报错，测试连接只
   assert.equal(ok.status, 'configured', 'RunningHub 没有无计费探测接口，只能说配置已成形')
   assert.match(ok.message, /未提交任务/)
 })
+
+test('RunningHub: 平台「还在跑」的 code 都不会被误判成失败', async () => {
+  // 804 运行中 / 813 排队中（APIKEY_TASK_IS_QUEUED，实测踩过）/ 816 机器不足
+  let polls = 0
+  const seen = []
+  const fetchImpl = async (url) => {
+    const t = String(url)
+    if (t.endsWith('/task/openapi/create')) return json({ code: 0, msg: 'success', data: { taskId: '2111243484420239362' } })
+    if (t.endsWith('/task/openapi/outputs')) {
+      polls++
+      if (polls === 1) { seen.push(804); return json({ code: 804, msg: 'APIKEY_TASK_IS_RUNNING', data: {} }) }
+      if (polls === 2) { seen.push(813); return json({ code: 813, msg: 'APIKEY_TASK_IS_QUEUED', data: {} }) }
+      if (polls === 3) { seen.push(816); return json({ code: 816, msg: 'MACHINE_BUSY', data: {} }) }
+      return json({ code: 0, msg: 'success', data: [{ fileUrl: 'https://img.test/out.png', fileType: 'png' }] })
+    }
+    return image(png)
+  }
+  const out = await generateImage(rhChannel({ options: { pollIntervalMs: 1000 } }), request, { fetchImpl })
+  assert.deepEqual(seen, [804, 813, 816], '三个「进行中」的 code 都应触发继续轮询')
+  assert.equal(polls, 4, '第四次才拿到结果')
+  assert.equal(out.mediaType, 'image/png')
+})
