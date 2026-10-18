@@ -1750,6 +1750,13 @@ function versionsOf(jobId) {
       const [actionBusy, setActionBusy] = React.useState('')
       const [actionNote, setActionNote] = React.useState('')
       const [hot, setHot] = React.useState('')
+      // 「已提交重画，出图后自动替换」这类临时提示：显示几秒后自己消失，
+      // 不要一直挂在图片下方（重画完成与否由正文里的图自己说明）。
+      React.useEffect(() => {
+        if (!actionNote) return undefined
+        const timer = setTimeout(() => setActionNote(''), 6000)
+        return () => clearTimeout(timer)
+      }, [actionNote])
       // 手势状态机：pinch(双指缩放) / pan(放大后拖动) / swipe(横滑切图) / tap(轻点)
       const gesture = React.useRef(null)
       const areaRef = React.useRef(null)
@@ -2058,10 +2065,12 @@ function versionsOf(jobId) {
             style: Object.assign(actionBtnStyle(Boolean(actionBusy) || !shownId), { borderColor: 'rgba(242,104,107,.55)', color: '#f2686b' }),
           }, actionBusy === 'delete' ? '删除中…' : '🗑 删除图片'),
         ),
-        actionNote ? React.createElement('div', { style: { flex: '0 0 auto', color: '#9aa3b2', fontSize: '12px', textAlign: 'center', padding: '0 14px 8px' } }, actionNote) : null,
+        // 「已提交重画…」放在操作按钮下方（order 4），参数面板之后是底部说明。
+        // 之前这行没写 order，flex 默认 0，被排到了整列的最前面 —— 和顶部说明挤在一起。
+        actionNote ? React.createElement('div', { style: { flex: '0 0 auto', order: 4, color: '#9aa3b2', fontSize: '12px', textAlign: 'center', padding: '0 14px 8px' } }, actionNote) : null,
         showParams && detail ? React.createElement('div', {
           style: {
-            flex: '0 1 auto', order: 4, maxHeight: '46vh', overflowY: 'auto', margin: '0 14px 10px', padding: '12px 14px',
+            flex: '0 1 auto', order: 5, maxHeight: '46vh', overflowY: 'auto', margin: '0 14px 10px', padding: '12px 14px',
             background: 'rgba(20,24,32,.92)', border: '1px solid rgba(160,180,210,.28)', borderRadius: '10px',
             fontSize: '12px', lineHeight: 1.75, color: '#c8d2e0', position: 'relative', zIndex: 2147483007,
           },
@@ -2140,7 +2149,7 @@ function versionsOf(jobId) {
           }) : null,
         ),
         React.createElement('div', {
-          style: { flex: '0 0 auto', color: '#8b95a5', fontSize: '12px', textAlign: 'center', padding: '8px 12px 14px' },
+          style: { flex: '0 0 auto', order: 6, color: '#8b95a5', fontSize: '12px', textAlign: 'center', padding: '6px 12px 14px' },
         }, total > 1
           ? '点图片两侧切换　·　双指放大，放大后拖动，轻点复原　·　点空白处关闭'
           : '双指放大，放大后拖动，轻点复原　·　点空白处关闭'),
