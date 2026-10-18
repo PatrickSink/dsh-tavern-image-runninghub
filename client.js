@@ -749,7 +749,9 @@ let openImageOverlay = null
           // 覆盖 tavern.css 的 .dsh-tavern-illustration img 限制（320x240）：
           // 行内 style 优先级高于 CSS 类，所以这里写死 width/maxWidth/maxHeight 三件套。
           style: { display: 'block', ...imageWidthStyle({ width: 'auto', maxWidth: 'min(660px, 96vw)' }, displayWidth), height: 'auto', maxHeight: 'none', borderRadius: '10px', cursor: 'zoom-in', background: '#1a1d24', margin: '10px 0', touchAction: 'manipulation' },
-          onClick: () => { if (Date.now() < suppressTapUntil.current) return; viewImage(displayJobId, title) },
+          // 带上 displayMediaContext（gameId/mediaId/textVersion/turn 都齐）：查看器里的
+          // 「再次生图」与「关闭时写回正文」都要这几个字段，缺了会被判「参数无效」。
+          onClick: () => { if (Date.now() < suppressTapUntil.current) return; viewImage(displayJobId, title, displayMediaContext) },
           onDoubleClick: () => { cancelPress(); openWidthBar() },
           onContextMenu: event => {
             cancelPress()
@@ -1313,22 +1315,20 @@ function versionsOf(jobId) {
         if (typeof openImageOverlay !== 'function') return
         const id = String(jobId)
         const label = String(title || '插图')
-        // 这一张挂在哪个媒体项上、属于哪一局 —— 关闭查看器时要把「最后看的那张」
-        // 写回这个媒体项，正文才会跟着变。
+        // 这一张挂在哪个媒体项上、属于哪一局、哪一轮的哪个正文版本 ——
+        // 「关闭时把最后看的那张写回正文」和「再次生图」都要这四个字段。
+        // 优先用调用方传进来的（正文里的插图渲染时手里就有 mediaContext），
+        // 拿不到才回退到 /history 里的作业记录。
         const mediaId = String((opts && opts.mediaId) || '')
         const gameId = String((opts && opts.gameId) || '')
-        // 这张图自己的重画版本链（独立于整场翻页）
+        const optTextVersion = String((opts && opts.textVersion) || '')
+        const optTurn = opts && Number.isFinite(Number(opts.turn)) ? Number(opts.turn) : null
+        // 这张图自己的重画版本链
         const chain = versionsOf(id)
 
-        // 翻页范围 = **这张图所属的那一轮正文**，不再把整个对话的图混在一起翻。
-        //
-        // 为什么不按「同一句话」（mount）分组：一次规划在每个锚点只出一张图，同一句话
-        // 通常就一张，分完只剩自己，滑动永远没内容。而一轮会出 2~3 张（分散在正文各段），
-        // 既能滑动、又不会翻到几十轮之前去。
-        //
-        // 分组的键是 gameId + textVersion：textVersion 标明「这一轮的哪个正文版本」，
-        // 作业从很早就在存它（tab 切换、重写都会换版本），所以旧数据也能用。
-        // 同组内把这张图的重画版本链并进来，并去重。
+        // 翻页范围 = 「这一处插图」：同一 mount（正文里被挂载的那句话）。
+        // 一轮会出好几张，但它们挂在不同句子下，属于不同位置，绝不能混成一组一起翻。
+        // 旧作业没有 mount（那时还没记），这种情况退回它自己的重画版本链。
         let list = []
         try {
           const r = await jsonFetch(BASE + '/history')
@@ -1365,10 +1365,11 @@ function versionsOf(jobId) {
             + (chain.length > 1 ? '　（这张有 ' + chain.length + ' 个重画版本）' : ''),
           mediaId,
           gameId,
-          // 「再次生图」走的是 media-action 的 redraw，而它要求 mediaContext 六个字段齐全
-          // （gameId / mediaId / jobId / textVersion / turn）。这里一并带出去。
-          textVersion: String((self && self.textVersion) || ''),
-          turn: self && Number.isFinite(self.turn) ? self.turn : null,
+          // redraw 要求 mediaContext 六字段齐全（gameId/mediaId/jobId/textVersion/turn）。
+          // 注意：这些字段必须在这里就能取到 —— 上面 try 块里的 self 是块级作用域，
+          // 在这里引用会抛 ReferenceError（之前的写法有这个隐患）。调用方传什么就用什么。
+          textVersion: optTextVersion,
+          turn: optTurn,
         })
       } catch { /* 看图失败不影响正文 */ }
     }
