@@ -5347,11 +5347,30 @@ function versionsOf(jobId) {
         const style = document.createElement('style')
         style.id = id
         style.textContent = [
+          // 只给 figcaption 写 text-align:center 是没用的：Tavern 给这层 figure 的样式是
+          // flex column + align-items:flex-start + gap:10px，figcaption 作为 flex item
+          // 会按内容宽度收缩并靠左，文字在盒子里居中等于没居中。
+          // 必须把容器的 align-items 改成 center，同时收紧 gap，标题才真的居中并贴上图片。
           // owner 认的是 package.json 的 name；两个值都写上，改名后也不会失效。
-          '.dsh-tavern-plugin-media[data-owner="dsh-tavern-comfy"] > figcaption,',
-          '.dsh-tavern-plugin-media[data-owner="dsh-tavern-image"] > figcaption {',
+          '.dsh-tavern-plugin-media[data-owner="dsh-tavern-comfy"],',
+          '.dsh-tavern-plugin-media[data-owner="dsh-tavern-image"] {',
+          '  align-items: center;',
+          '  gap: 2px;',
+          '}',
+          // 兜底：不依赖 data-owner。dsh-tavern-illustration 是 Tavern 给插件插图用的类名，
+          // data-owner 取的是 Cordis fiber 名，跟 package.json 的 name 不一定一致，
+          // 猜错整条规则就失效 —— 所以这里再按类名写一遍。
+          // 两个类名叠着写（0,2,0）压过 Tavern 自己的单类名规则（0,1,0），
+          // 避免出现「谁的样式表后加载谁生效」这种不确定结果。
+          '.dsh-tavern-plugin-media.dsh-tavern-illustration {',
+          '  align-items: center;',
+          '  gap: 2px;',
+          '}',
+          '.dsh-tavern-plugin-media.dsh-tavern-illustration > figcaption {',
           '  text-align: center;',
-          '  margin: 2px 0 0;',
+          '  align-self: center;',
+          '  margin: 0;',
+          '  padding: 0;',
           '  line-height: 1.4;',
           '}',
         ].join('\n')
