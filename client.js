@@ -1316,17 +1316,24 @@ function versionsOf(jobId) {
         // 这张图自己的重画版本链（独立于整场翻页）
         const chain = versionsOf(id)
 
-        // 主翻页列表：整场对话里出过图的作业（旧 → 新）。拿不到就退回版本链。
+        // 翻页范围只限**这一处插图**：作业记录了 mount（正文里被挂载的那句话），
+        // 同一 mount 的作业属于同一个位置；不再把整场对话的图混在一起翻。
+        // 旧的作业没有 mount（那时还没记），这时退回这张图自己的重画版本链。
         let list = []
         try {
           const r = await jsonFetch(BASE + '/history')
           const history = (r && Array.isArray(r.jobs)) ? r.jobs : []
-          list = history
-            .filter(job => job && job.id && (job.hasImage || job.byteLength))
-            .map(job => String(job.id))
-            .reverse()
+          const withImage = history.filter(job => job && job.id && (job.hasImage || job.byteLength))
+          const self = withImage.find(job => String(job.id) === id)
+          const mount = String((self && self.mount) || '')
+          if (mount) {
+            list = withImage
+              .filter(job => String(job.mount || '') === mount)
+              .map(job => String(job.id))
+              .reverse()
+          }
         } catch { /* 拿不到历史就退回版本链 */ }
-        if (!list.includes(id)) list = chain
+        if (!list.includes(id)) list = chain.length ? chain : [id]
 
         const at = Math.max(0, list.indexOf(id))
         const versionAt = Math.max(0, chain.indexOf(id))
@@ -1693,48 +1700,37 @@ function versionsOf(jobId) {
 
     function ImageOverlay() {
       const [view, setView] = React.useState({ open: false, jobIds: [], note: '', working: false, index: 0 })
-      // 缩放与平移：滚轮缩放、按住拖动（触摸同样支持）
       const [zoom, setZoom] = React.useState(1)
       const [pos, setPos] = React.useState({ x: 0, y: 0 })
+      const [swipeX, setSwipeX] = React.useState(0)      // 跟手的横向位移
       const [dragging, setDragging] = React.useState(false)
       const [imageWarning, setImageWarning] = React.useState('')
-      const dragRef = React.useRef(null)
-      const onWheel = React.useCallback(event => {
-        event.preventDefault()
-        setZoom(z => Math.max(0.2, Math.min(8, z * (event.deltaY > 0 ? 0.9 : 1.1))))
-      }, [])
-      const onDragStart = React.useCallback(event => {
-        event.preventDefault()
-        dragRef.current = { x: event.clientX - pos.x, y: event.clientY - pos.y }
-        setDragging(true)
-      }, [pos.x, pos.y])
-      const onDragMove = React.useCallback(event => {
-        if (!dragRef.current) return
-        setPos({ x: event.clientX - dragRef.current.x, y: event.clientY - dragRef.current.y })
-      }, [])
-      const onDragEnd = React.useCallback(() => { dragRef.current = null; setDragging(false) }, [])
-      const onTouchStart = React.useCallback(event => {
-        const touch = event.touches && event.touches[0]
-        if (!touch) return
-        dragRef.current = { x: touch.clientX - pos.x, y: touch.clientY - pos.y }
-        setDragging(true)
-      }, [pos.x, pos.y])
-      const onTouchMove = React.useCallback(event => {
-        const touch = event.touches && event.touches[0]
-        if (!dragRef.current || !touch) return
-        event.preventDefault()
-        setPos({ x: touch.clientX - dragRef.current.x, y: touch.clientY - dragRef.current.y })
-      }, [])
-      openImageOverlay = (next) => setView(current => Object.assign({}, current, next && next.open ? Object.assign({ index: 0, versionAt: 0 }, next) : next))
-      const close = () => openImageOverlay({ open: false, jobIds: [], versions: [], versionAt: 0, note: '', working: false, index: 0 })
+      // 手势状态机：pinch(双指缩放) / pan(放大后拖动) / swipe(横滑切图) / tap(轻点)
+      const gesture = React.useRef(null)
+      const areaRef = React.useRef(null)
+
+      openImageOverlay = (next) => setView(current => Object.assign({}, current, next && next.open ? Object.assign({ index: 0 }, next) : next))
+      const close = () => openImageOverlay({ open: false, jobIds: [], note: '', working: false, index: 0 })
+
       const total = view.jobIds.length
       const at = total ? Math.max(0, Math.min(total - 1, Number(view.index) || 0)) : 0
-      // 当前这张图自己的重画版本链（与整场翻页互不影响）
-      const versions = Array.isArray(view.versions) ? view.versions : []
-      const vTotal = versions.length
-      const vAt = vTotal ? Math.max(0, Math.min(vTotal - 1, Number(view.versionAt) || 0)) : 0
-      // 真正显示的那张：有版本链就用版本链的当前版，否则用主列表的当前张
-      const shownId = vTotal ? versions[vAt] : view.jobIds[at]
+      const shownId = view.jobIds[at]
+
+      const reset = React.useCallback(() => { setZoom(1); setPos({ x: 0, y: 0 }); setSwipeX(0) }, [])
+      const go = React.useCallback((delta) => {
+        if (total < 2) return
+        setView(cur => {
+          const t = cur.jobIds.length
+          if (t < 2) return cur
+          const a = Math.max(0, Math.min(t - 1, Number(cur.index) || 0))
+          return Object.assign({}, cur, { index: (a + delta + t) % t })
+        })
+        reset()
+      }, [total, reset])
+
+      // 切图时把缩放与位移复位（换了一张图，之前的可视状态没有意义）
+      React.useEffect(() => { reset() }, [at, view.open, reset])
+
       React.useEffect(() => {
         let alive = true
         setImageWarning('')
@@ -1743,17 +1739,9 @@ function versionsOf(jobId) {
         }).catch(() => {})
         return () => { alive = false }
       }, [view.open, shownId])
-      const go = (delta) => {
-        if (total < 2) return
-        // 翻整场的时候把版本链清掉，免得两张图的版本串在一起
-        openImageOverlay({ index: (at + delta + total) % total, versions: [], versionAt: 0 })
-      }
-      const goVersion = (delta) => {
-        if (vTotal < 2) return
-        openImageOverlay({ versionAt: (vAt + delta + vTotal) % vTotal })
-      }
+
       React.useEffect(() => {
-        if (!view.open || total < 2) return undefined
+        if (!view.open) return undefined
         const onKey = (event) => {
           if (event.key === 'ArrowLeft') { event.preventDefault(); go(-1) }
           else if (event.key === 'ArrowRight') { event.preventDefault(); go(1) }
@@ -1761,106 +1749,186 @@ function versionsOf(jobId) {
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-      }, [view.open, at, total])
-      // 切图或重新打开时复位缩放与位移
-      React.useEffect(() => { setZoom(1); setPos({ x: 0, y: 0 }); dragRef.current = null }, [view.open, at])
+      }, [view.open, go])
+
+      const pinchDistance = touches => {
+        const [a, b] = touches
+        return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      }
+      const onTouchStart = React.useCallback(event => {
+        const touches = event.touches
+        if (!touches || !touches.length) return
+        if (touches.length >= 2) {
+          gesture.current = { mode: 'pinch', startDist: pinchDistance(touches) || 1, startZoom: zoom, startPos: { ...pos }, mid: { x: (touches[0].clientX + touches[1].clientX) / 2, y: (touches[0].clientY + touches[1].clientY) / 2 } }
+          setDragging(true)
+          return
+        }
+        const t = touches[0]
+        gesture.current = {
+          mode: zoom > 1 ? 'pan' : 'swipe',
+          startX: t.clientX, startY: t.clientY,
+          startPos: { ...pos }, moved: false, swipeX: 0, atEdge: false,
+        }
+      }, [zoom, pos])
+
+      const onTouchMove = React.useCallback(event => {
+        const g = gesture.current
+        const touches = event.touches
+        if (!g || !touches || !touches.length) return
+        if (g.mode === 'pinch') {
+          if (touches.length < 2) return
+          event.preventDefault()
+          const next = Math.max(1, Math.min(6, g.startZoom * (pinchDistance(touches) / (g.startDist || 1))))
+          setZoom(next)
+          return
+        }
+        const t = touches[0]
+        const dx = t.clientX - g.startX
+        const dy = t.clientY - g.startY
+        if (!g.moved && Math.hypot(dx, dy) > 6) g.moved = true
+        if (g.mode === 'pan') {
+          event.preventDefault()
+          const box = areaRef.current?.getBoundingClientRect()
+          const limitX = box ? Math.max(0, (box.width * (zoom - 1)) / 2) : Infinity
+          const limitY = box ? Math.max(0, (box.height * (zoom - 1)) / 2) : Infinity
+          const nx = Math.max(-limitX, Math.min(limitX, g.startPos.x + dx))
+          const ny = Math.max(-limitY, Math.min(limitY, g.startPos.y + dy))
+          // 横向已经顶到边还继续往同方向滑 → 转成切图手势（放大状态下也能翻页）
+          const pushing = (dx > 0 && g.startPos.x >= limitX - 1) || (dx < 0 && g.startPos.x <= -limitX + 1)
+          if (total > 1 && pushing && Math.abs(dx) > Math.abs(dy) + 12) {
+            g.mode = 'swipe'
+            g.atEdge = true
+            g.startX = t.clientX - (g.swipeX || 0)
+          } else if (!g.atEdge) {
+            setPos({ x: nx, y: ny })
+            return
+          }
+        }
+        if (g.mode === 'swipe') {
+          event.preventDefault()
+          const offset = t.clientX - g.startX
+          g.swipeX = offset
+          setSwipeX(offset)
+        }
+      }, [zoom, total])
+
+      const onTouchEnd = React.useCallback(event => {
+        const g = gesture.current
+        gesture.current = null
+        setDragging(false)
+        if (!g) return
+        if (g.mode === 'pinch') return
+        const remaining = event.touches && event.touches.length
+        if (g.mode === 'swipe') {
+          const offset = g.swipeX || 0
+          if (Math.abs(offset) > 60 && total > 1) go(offset < 0 ? 1 : -1)
+          else setSwipeX(0)
+          return
+        }
+        if (g.mode === 'pan') {
+          // 轻点（几乎没移动）→ 放大状态回到原大小；未放大时轻点留给外层关闭
+          if (!g.moved && zoom > 1) reset()
+          return
+        }
+        // swipe 模式下没怎么动也算轻点
+        if (g.mode === 'swipe' && !g.moved && zoom > 1) reset()
+      }, [zoom, total, go, reset])
+
+      // 桌面端：滚轮缩放，按住拖动平移；双击复位
+      const onWheel = React.useCallback(event => {
+        event.preventDefault()
+        setZoom(z => Math.max(1, Math.min(6, z * (event.deltaY > 0 ? 0.9 : 1.1))))
+      }, [])
+      const onMouseDown = React.useCallback(event => {
+        if (zoom <= 1) return
+        event.preventDefault()
+        gesture.current = { mode: 'pan', startX: event.clientX, startY: event.clientY, startPos: { ...pos }, moved: false }
+        setDragging(true)
+      }, [zoom, pos])
+      const onMouseMove = React.useCallback(event => {
+        const g = gesture.current
+        if (!g || g.mode !== 'pan') return
+        g.moved = true
+        setPos({ x: g.startPos.x + (event.clientX - g.startX), y: g.startPos.y + (event.clientY - g.startY) })
+      }, [])
+      const onMouseUp = React.useCallback(() => { gesture.current = null; setDragging(false) }, [])
+      const onDoubleClick = React.useCallback(() => { if (zoom > 1) reset() }, [zoom, reset])
+
       if (!view.open) return null
-      const goPrev = () => go(-1)
-      const goNext = () => go(1)
+
+      const thumb = (jobId, index) => React.createElement('button', {
+        key: jobId, type: 'button',
+        onClick: (event) => { event.stopPropagation(); if (index !== at) { setView(cur => Object.assign({}, cur, { index })); reset() } },
+        title: '第 ' + (index + 1) + ' 张',
+        style: {
+          flex: '0 0 auto', width: '52px', height: '52px', padding: 0, borderRadius: '8px', overflow: 'hidden',
+          border: index === at ? '2px solid #6aa8ff' : '1px solid rgba(255,255,255,.22)',
+          background: '#141820', cursor: 'pointer', opacity: index === at ? 1 : 0.62,
+        },
+      }, React.createElement('img', {
+        src: BASE + '/jobs?id=' + encodeURIComponent(jobId) + '&image=1',
+        alt: '', draggable: false, loading: 'lazy',
+        style: { display: 'block', width: '100%', height: '100%', objectFit: 'cover' },
+      }))
+
       return React.createElement('div', {
         style: {
-          position: 'fixed', inset: '0', zIndex: 2147483000, background: 'rgba(0,0,0,.82)',
-          overflowY: 'auto', padding: '16px 20px 40px', boxSizing: 'border-box', backdropFilter: 'blur(3px)',
+          position: 'fixed', inset: '0', zIndex: 2147483000, background: 'rgba(0,0,0,.9)',
+          display: 'flex', flexDirection: 'column', boxSizing: 'border-box', backdropFilter: 'blur(3px)',
+          overscrollBehavior: 'contain', touchAction: 'none',
         },
         onClick: close,
-      }, React.createElement('div', {
-        style: { maxWidth: '1240px', margin: '0 auto' },
-        onClick: event => event.stopPropagation(),
       },
-        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', gap: '12px' } },
-          React.createElement('div', { style: { color: '#e6ecf5', fontSize: '15px', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-            view.working ? '正在生成…' : (view.note || '插图')),
-          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 } },
-            total > 1 ? React.createElement('button', {
-              type: 'button', onClick: goPrev, title: '上一张（←）',
-              style: { padding: '5px 14px', fontSize: '14px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'rgba(255,255,255,.06)', color: '#dbe3ee', cursor: 'pointer' },
-            }, '◀') : null,
-            total > 1 ? React.createElement('span', { style: { fontSize: '12px', color: '#9aa3b2', minWidth: '44px', textAlign: 'center' } }, (at + 1) + ' / ' + total) : null,
-            total > 1 ? React.createElement('button', {
-              type: 'button', onClick: goNext, title: '下一张（→）',
-              style: { padding: '5px 14px', fontSize: '14px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'rgba(255,255,255,.06)', color: '#dbe3ee', cursor: 'pointer' },
-            }, '▶') : null,
-            React.createElement('button', {
-              type: 'button', onClick: close,
-              style: { padding: '5px 16px', fontSize: '13px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'transparent', color: '#dbe3ee', cursor: 'pointer' },
-            }, '关闭'),
+        // 顶部：标题 + 缩略图条（当前张高亮，标示它在全部图片里的位置）
+        React.createElement('div', {
+          style: { flex: '0 0 auto', padding: '10px 14px 8px' },
+          onClick: event => event.stopPropagation(),
+        },
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' } },
+            React.createElement('div', { style: { color: '#e6ecf5', fontSize: '14px', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+              view.working ? '正在生成…' : (view.note || '插图')),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 } },
+              total > 1 ? React.createElement('span', { style: { fontSize: '12px', color: '#9aa3b2' } }, (at + 1) + ' / ' + total) : null,
+              React.createElement('button', {
+                type: 'button', onClick: close,
+                style: { padding: '5px 16px', fontSize: '13px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'transparent', color: '#dbe3ee', cursor: 'pointer' },
+              }, '关闭'),
+            ),
           ),
+          total > 1 ? React.createElement('div', {
+            style: { display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' },
+          }, view.jobIds.map((jobId, index) => thumb(jobId, index))) : null,
         ),
         view.working ? React.createElement('div', { style: { color: '#9aa3b2', fontSize: '14px', padding: '30px 0', textAlign: 'center' } }, '规划中，通常十几秒…') : null,
-        imageWarning ? React.createElement('div', { role: 'status', style: { color: '#e2b93b', fontSize: '12px', textAlign: 'center', padding: '8px 10px', marginBottom: '8px', background: 'rgba(226,185,59,.1)', borderRadius: '8px' } }, imageWarning) : null,
+        imageWarning ? React.createElement('div', { role: 'status', style: { color: '#e2b93b', fontSize: '12px', textAlign: 'center', padding: '8px 10px', margin: '0 14px 8px', background: 'rgba(226,185,59,.1)', borderRadius: '8px' } }, imageWarning) : null,
+        // 图片区：横滑切图、双指缩放、放大后拖动
         React.createElement('div', {
-          style: view.jobIds.length > 1
-            ? { display: 'flex', flexWrap: 'wrap', gap: '12px', justifyContent: 'center', alignItems: 'flex-start' }
-            : { display: 'flex', justifyContent: 'center' },
+          ref: areaRef,
+          style: { flex: '1 1 auto', minHeight: 0, position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+          onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd,
+          onWheel, onMouseDown, onMouseMove, onMouseUp, onMouseLeave: onMouseUp, onDoubleClick,
         },
-          // 左右两侧的大按钮（图很大时也好点）
-          total > 1 ? React.createElement('button', {
-            type: 'button', onClick: (e) => { e.stopPropagation(); goPrev() }, title: '上一张（←）',
-            style: {
-              position: 'fixed', left: '18px', top: '50%', transform: 'translateY(-50%)',
-              zIndex: 2147483006, width: '64px', height: '120px', borderRadius: '14px',
-              border: '1px solid rgba(255,255,255,.22)', background: 'rgba(20,24,30,.72)',
-              color: '#e9eef6', fontSize: '34px', lineHeight: 1, cursor: 'pointer',
-              backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            },
-          }, '‹') : null,
-          total > 1 ? React.createElement('button', {
-            type: 'button', onClick: (e) => { e.stopPropagation(); goNext() }, title: '下一张（→）',
-            style: {
-              position: 'fixed', right: '18px', top: '50%', transform: 'translateY(-50%)',
-              zIndex: 2147483006, width: '64px', height: '120px', borderRadius: '14px',
-              border: '1px solid rgba(255,255,255,.22)', background: 'rgba(20,24,30,.72)',
-              color: '#e9eef6', fontSize: '34px', lineHeight: 1, cursor: 'pointer',
-              backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            },
-          }, '›') : null,
-          // 一次只显示当前这张，左右按钮切换
-          // 一次只显示当前这张；可拖动平移、滚轮缩放
-          // 只显示当前这一张（shownId：有重画版本就用版本里的当前版）
-          [shownId].filter(Boolean).map(id => React.createElement('img', {
-            key: id,
-            src: BASE + '/jobs?id=' + encodeURIComponent(id) + '&image=1',
+          shownId ? React.createElement('img', {
+            key: shownId,
+            src: BASE + '/jobs?id=' + encodeURIComponent(shownId) + '&image=1',
             alt: view.note || '插图',
             draggable: false,
-            onWheel: onWheel, onMouseDown: onDragStart, onMouseMove: onDragMove, onMouseUp: onDragEnd,
-            onMouseLeave: onDragEnd, onTouchStart: onTouchStart, onTouchMove: onTouchMove, onTouchEnd: onDragEnd,
             style: {
-              display: 'block', maxWidth: '100%', maxHeight: 'calc(100vh - 200px)', width: 'auto', height: 'auto',
-              objectFit: 'contain', borderRadius: '12px', background: '#1a1d24',
-              cursor: zoom > 1 ? 'grab' : 'default', userSelect: 'none', touchAction: 'none',
-              transform: 'translate(' + pos.x + 'px,' + pos.y + 'px) scale(' + zoom + ')',
-              transition: dragging ? 'none' : 'transform .12s',
+              maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto',
+              objectFit: 'contain', borderRadius: '10px', background: '#1a1d24',
+              cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default',
+              userSelect: 'none',
+              transform: 'translate(' + (pos.x + swipeX) + 'px,' + pos.y + 'px) scale(' + zoom + ')',
+              transition: dragging ? 'none' : 'transform .16s ease-out',
             },
-          })),
-          // 这张图自己的重画版本（跟上面"整场翻页"是两回事），只有多于 1 版才显示
-          vTotal > 1 ? React.createElement('div', {
-            style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', marginTop: '12px', position: 'relative', zIndex: 2147483006 },
-            onClick: event => event.stopPropagation(),
-          },
-            React.createElement('span', { style: { fontSize: '12px', color: '#9aa3b2' } }, '重画版本'),
-            React.createElement('button', {
-              type: 'button', onClick: () => goVersion(-1), title: '上一个版本',
-              style: { padding: '3px 12px', fontSize: '13px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'rgba(255,255,255,.06)', color: '#dbe3ee', cursor: 'pointer' },
-            }, '◀'),
-            React.createElement('span', { style: { fontSize: '12px', color: '#c8d2e0', minWidth: '40px', textAlign: 'center' } }, (vAt + 1) + ' / ' + vTotal),
-            React.createElement('button', {
-              type: 'button', onClick: () => goVersion(1), title: '下一个版本',
-              style: { padding: '3px 12px', fontSize: '13px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'rgba(255,255,255,.06)', color: '#dbe3ee', cursor: 'pointer' },
-            }, '▶'),
-          ) : null,
+          }) : null,
         ),
-        view.jobIds.length ? React.createElement('div', { style: { color: '#8b95a5', fontSize: '12px', textAlign: 'center', paddingBottom: '20px' } }, '点空白处关闭' + (total > 1 ? '　也可以点两侧的 ‹ › 或按 ← → 切换' : '')) : null,
-      ))
+        React.createElement('div', {
+          style: { flex: '0 0 auto', color: '#8b95a5', fontSize: '12px', textAlign: 'center', padding: '8px 12px 14px' },
+        }, total > 1
+          ? '左右滑动切换　·　双指放大，放大后拖动，轻点复原　·　点空白处关闭'
+          : '双指放大，放大后拖动，轻点复原　·　点空白处关闭'),
+      )
     }
 
     function DockImageButton(props) {
