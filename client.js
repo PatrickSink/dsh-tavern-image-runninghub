@@ -766,8 +766,13 @@ let openImageOverlay = null
       //    同样把提示压掉。
       // 所以「媒体项自身还在排队」这个信号的位置要放对：排在 isCancelled / isUncertain 之后
       //（那两者是用户动作或明确的异常终态，优先级更高），但排在 recoveredReady 之前。
+      // ③ 还有一层：重绘走的是「替换任务」，它记录在媒体项的 replacement 里。
+      //    替换进行中时，媒体项本身可能已经是 ready（原图还在），轮询的那个作业也可能已经
+      //    完成 —— recoveredReady 因此为 true，把整块状态压成「已完成」，提示照样不出现。
+      //    所以「替换任务进行中」也必须在 recoveredReady 之前。
+      const replacementActive = Boolean(replacement && ['pending', 'running', 'queued', 'processing'].includes(String(replacement.state || '')))
       const itemPending = Boolean(item && item.status === 'pending')
-      const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : itemPending ? 'pending' : recoveredReady ? 'done' : String(
+      const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : replacementActive ? String(replacement.state) : itemPending ? 'pending' : recoveredReady ? 'done' : String(
         currentPolledJob && currentPolledJob.state
         || replacement && replacement.state
         || (item && item.status === 'failed' ? 'failed' : '')
