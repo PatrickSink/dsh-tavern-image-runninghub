@@ -2086,28 +2086,37 @@ function versionsOf(jobId) {
           onWheel, onMouseDown, onMouseMove, onMouseUp, onMouseLeave: onMouseUp, onDoubleClick,
         },
           // 左右点击热区：从屏幕边缘往内滑会拉出侧边栏，所以切换改成点图片两侧。
-          // 只在未放大时挂上，免得挡住放大后的拖动。按下时只叠一层很淡的深色，
-          // 不用亮色 —— 在半透明黑底上亮块会很突兀。
+          // 只在未放大时挂上，免得挡住放大后的拖动。按下时只叠一层很淡的深色。
+          //
+          // 两点细节：
+          // ① 按钮默认会有一圈蓝色聚焦框 + 移动端点击高亮，全关掉（outline / tap-highlight / appearance），
+          //    否则点一下冒蓝框很难看。
+          // ② hot 必须在点击时立刻复位。触摸设备上 mouseleave 不可靠，只靠它会让那层
+          //    半透明深色留在屏幕上不消失。
           total > 1 && zoom <= 1 ? React.createElement('button', {
             type: 'button', title: '上一张', 'aria-label': '上一张',
-            onClick: event => { event.stopPropagation(); go(-1) },
+            onClick: event => { event.stopPropagation(); setHot(''); go(-1) },
             onMouseEnter: () => setHot('left'), onMouseLeave: () => setHot(''),
-            onTouchStart: () => setHot('left'), onTouchEnd: () => setHot(''),
+            onTouchStart: () => setHot('left'), onTouchEnd: () => setHot(''), onTouchCancel: () => setHot(''),
             style: {
               position: 'absolute', left: 0, top: 0, bottom: 0, width: '26%',
               background: hot === 'left' ? 'rgba(0,0,0,.20)' : 'transparent',
-              border: 'none', cursor: 'pointer', zIndex: 6, padding: 0, transition: 'background .15s',
+              border: 'none', outline: 'none', appearance: 'none', WebkitAppearance: 'none',
+              WebkitTapHighlightColor: 'transparent',
+              cursor: 'pointer', zIndex: 6, padding: 0, transition: 'background .15s',
             },
           }) : null,
           total > 1 && zoom <= 1 ? React.createElement('button', {
             type: 'button', title: '下一张', 'aria-label': '下一张',
-            onClick: event => { event.stopPropagation(); go(1) },
+            onClick: event => { event.stopPropagation(); setHot(''); go(1) },
             onMouseEnter: () => setHot('right'), onMouseLeave: () => setHot(''),
-            onTouchStart: () => setHot('right'), onTouchEnd: () => setHot(''),
+            onTouchStart: () => setHot('right'), onTouchEnd: () => setHot(''), onTouchCancel: () => setHot(''),
             style: {
               position: 'absolute', right: 0, top: 0, bottom: 0, width: '26%',
               background: hot === 'right' ? 'rgba(0,0,0,.20)' : 'transparent',
-              border: 'none', cursor: 'pointer', zIndex: 6, padding: 0, transition: 'background .15s',
+              border: 'none', outline: 'none', appearance: 'none', WebkitAppearance: 'none',
+              WebkitTapHighlightColor: 'transparent',
+              cursor: 'pointer', zIndex: 6, padding: 0, transition: 'background .15s',
             },
           }) : null,
           shownId ? React.createElement('img', {
