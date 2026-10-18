@@ -655,21 +655,6 @@ let openImageOverlay = null
       useEffect(() => { activeActionJobId.current = ''; setPolledJob(null); setActionJobId('') }, [item && item.id])
       const effectiveJobId = String(actionJobId || activeJobId)
 
-      // 临时取证：确认组件渲染时最终用的到底是哪张作业。
-      // 覆盖表已确认写入、监听器也确认存在，正文却没换 —— 只可能是这里算出来的值不对，
-      // 或者被 polledJob / actionJobId 覆盖掉了。查清这一层就能定位到底。
-      useEffect(() => {
-        reportHost('official-image-render', {
-          mediaId: String(item && item.id || '').slice(0, 14),
-          override: overrideJobId.slice(0, 8),
-          active: activeJobId.slice(0, 8),
-          effective: effectiveJobId.slice(0, 8),
-          polled: String(polledJob && polledJob.id || '').slice(0, 8),
-          action: String(actionJobId || '').slice(0, 8),
-          recovered: recoveredReady,
-        })
-      }, [overrideJobId, activeJobId, effectiveJobId, recoveredReady, polledJob, actionJobId])
-
       // Poll only this media item's active job. GET is safe to retry; paid POSTs below are single-flight.
       useEffect(() => {
         const jobState = polledJob && String(polledJob.id || '') === effectiveJobId ? String(polledJob.state || '') : ''
@@ -749,6 +734,18 @@ let openImageOverlay = null
         ? BASE + '/jobs?id=' + encodeURIComponent(effectiveJobId) + '&image=1'
         : String(item && item.url || '') || (cachedImageReady && jobId && !(item && item.status === 'failed') && !(item && item.data && item.data.cancelled === true) ? BASE + '/jobs?id=' + encodeURIComponent(jobId) + '&image=1' : '')
       const jobMayHaveReachedProvider = Boolean(currentPolledJob && (currentPolledJob.requestMayHaveSucceeded === true || currentPolledJob.state === 'uncertain'))
+      // 临时取证：确认组件渲染时最终用的到底是哪张作业（依赖在此处都已定义）。
+      // 覆盖表已确认写入、监听器也确认存在，正文却没换 —— 只可能是这里算出来的值不对。
+      useEffect(() => {
+        reportHost('official-image-render', {
+          override: overrideJobId.slice(0, 8),
+          active: activeJobId.slice(0, 8),
+          jobId: jobId.slice(0, 8),
+          effective: effectiveJobId.slice(0, 8),
+          recovered: recoveredReady,
+          src: String(src || '').slice(-32),
+        })
+      }, [overrideJobId, activeJobId, jobId, effectiveJobId, recoveredReady, src])
       const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (replacement && replacement.state === 'uncertain' && !recoveredReady))
       const isCancelled = !recoveredReady && (Boolean(item && item.data && item.data.cancelled === true) || Boolean(currentPolledJob && currentPolledJob.state === 'cancelled') || Boolean(replacement && replacement.state === 'cancelled'))
       const taskState = recoveredReady ? 'done' : isUncertain ? 'uncertain' : isCancelled ? 'cancelled' : String(currentPolledJob && currentPolledJob.state || replacement && replacement.state || (item && item.status === 'failed' ? 'failed' : item && item.status === 'pending' ? 'pending' : 'done'))
