@@ -114,6 +114,8 @@ let openImageOverlay = null
       // 「关闭查看器时把选中的那张写回正文」这条路径的取证：
       // 它全程静默过，出问题时看不到卡在哪一步，所以不受预算限制。
       'apply-version-skip', 'apply-version-result', 'apply-version-threw',
+      // 覆盖表写入（含监听器数量）：确认「切图后正文换图」这条链路走到了哪一步。
+      'media-job-override',
     ])
 
     function reportFingerprint(stage, data) {
@@ -543,6 +545,7 @@ let openImageOverlay = null
       if (want) mediaJobOverride.set(mid, want)
       else mediaJobOverride.delete(mid)
       if (before === want) return
+      reportHost('media-job-override', { mediaId: mid.slice(0, 12), jobId: want.slice(0, 8), before: before.slice(0, 8), listeners: mediaJobListeners.size })
       for (const fn of mediaJobListeners) { try { fn() } catch { /* 单个监听器出错不影响其它 */ } }
     }
     /** 订阅覆盖表的变化：OfficialImage 用它保证切图后正文立刻跟着变。 */
@@ -567,7 +570,9 @@ let openImageOverlay = null
       const overrideJobId = String(mediaJobOverride.get(String(item && item.id || '')) || '')
       const jobId = String(overrideJobId || (item && item.data && item.data.jobId) || '')
       const replacement = item && item.data && item.data.replacement && typeof item.data.replacement === 'object' ? item.data.replacement : null
-      const activeJobId = String(replacement && replacement.jobId || jobId)
+      // overrideJobId 必须排在最前。replacement 来自旧的 props，若让它优先就会把覆盖表
+      // 架空 —— 数据改了、override 也写了，取图却还是拿到旧的那张（正文不换的真正原因）。
+      const activeJobId = String(overrideJobId || (replacement && replacement.jobId) || jobId)
       const mediaContext = {
         gameId: String(props.gameId || ''), turn: props.turn,
         textVersion: String(item && item.textVersion || ''), mediaId: String(item && item.id || ''), jobId,
