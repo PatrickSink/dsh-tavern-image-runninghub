@@ -185,9 +185,19 @@ test('attach-turn 两轮都正常挂图；人物外貌档案不再由插件写�
     onTimelineChanged(handler) { timeline = handler; return () => {} },
     onGameRemoved() { return () => {} },
     async getTurn({ turn }) { return state.current.turn === turn ? state.current : null },
-    // 本体的「设计人物」以本局世界书条目的形式被召回；插件靠 lore 拿到它并注入提示词。
-    async getCardContext() {
-      return { lore: [{ title: '人物设计 · Luna', keys: ['Luna'], content: '人物：Luna\n\n外貌：silver hair, blue eyes, tall' }] }
+    // 人物白描走 Tavern 的专用接口（源码注释写明它是「正文与图片共用的那一份档案」）。
+    // 早先试过从 getCardContext().lore 里解析，实测 lore 里根本没有人物设计条目。
+    async getCharacterDesigns() {
+      return {
+        revision: 1, updatedAt: Date.now(),
+        characters: [{
+          name: 'Luna', aliases: [], identity: 'knight', narrativeRole: '', updatedAt: Date.now(),
+          sections: [
+            { key: 'identity', label: '身份', text: 'knight' },
+            { key: 'appearance', label: '外貌', text: 'silver hair, blue eyes, tall' },
+          ],
+        }],
+      }
     },
     async list() { return state.media },
     async readTurnData() { return state.snapshots.at(-1) ?? null },

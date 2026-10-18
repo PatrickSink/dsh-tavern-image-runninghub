@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeEntryActivation, selectPlannerContext, charactersFromDesignLore } from '../lib/planner-context.js'
+import { normalizeEntryActivation, selectPlannerContext, charactersFromDesignLore, charactersFromDesignArchive } from '../lib/planner-context.js'
 
 const chars = { characters: [
   { id: 'a', name: '安', match: 'Ann, Ann Lee', traits: { face: 'A face' } },
@@ -145,4 +145,65 @@ test('设计人物：没有设计条目时返回空，不报错', () => {
   assert.deepEqual(charactersFromDesignLore([]), [])
   assert.deepEqual(charactersFromDesignLore(null), [])
   assert.deepEqual(charactersFromDesignLore([{ title: '别的条目', content: '正文' }]), [])
+})
+
+// ── 人物白描走 Tavern 的专用接口 getCharacterDesigns ─────────────────────
+// 形状来自 projectCharacterDesignDocument：characters[].sections 是
+// { key, label, text } 五项（身份/性格/外貌/说话方式/剧情作用）。
+
+const designArchive = (list) => ({ revision: 1, updatedAt: Date.now(), characters: list })
+
+const designChar = (name, sections, extra = {}) => ({
+  name,
+  aliases: extra.aliases ?? [],
+  identity: extra.identity ?? '',
+  narrativeRole: extra.narrativeRole ?? '',
+  updatedAt: Date.now(),
+  sections: Object.entries(sections).map(([label, text]) => ({
+    key: { 身份: 'identity', 性格: 'personality', 外貌: 'appearance', 说话方式: 'speechStyle', 剧情作用: 'narrativeRole' }[label] ?? label,
+    label, text,
+  })),
+})
+
+test('人物设计档案 → 白描：外貌进 face，身份+性格进 feature', () => {
+  const out = charactersFromDesignArchive(designArchive([
+    designChar('刀疤番僧', {
+      身份: '欢喜教在中原暗线上的经手人',
+      性格: '猎户看牲口般的耐心',
+      外貌: '年约五十，身量高瘦如枯竹；身着暗黄旧僧袍，颈挂乌木念珠',
+      说话方式: '字字咬重',
+      剧情作用: '逼出林凡第一次惨败',
+    }, { aliases: ['番僧'] }),
+  ]))
+
+  assert.equal(out.length, 1)
+  const monk = out[0]
+  assert.equal(monk.name, '刀疤番僧')
+  assert.match(monk.traits.face, /身量高瘦如枯竹/)
+  assert.match(monk.traits.face, /暗黄旧僧袍/)
+  assert.match(monk.traits.feature, /欢喜教/)
+  assert.match(monk.traits.feature, /猎户看牲口/)
+  assert.match(monk.match, /番僧/, '别名应进 match 参与正文命中')
+  assert.ok(!/剧情作用|说话方式/.test(monk.traits.face), '剧情作用与说话方式不该混进外貌')
+})
+
+test('人物设计档案：空档案 / 缺字段 / 匿名条目都安全', () => {
+  assert.deepEqual(charactersFromDesignArchive(null), [])
+  assert.deepEqual(charactersFromDesignArchive({ characters: [] }), [])
+  assert.deepEqual(charactersFromDesignArchive({ characters: [{ name: '' }] }), [])
+  // 只有身份、没有外貌时也不该抛错
+  const out = charactersFromDesignArchive(designArchive([designChar('莉奈', { 身份: '女仆' })]))
+  assert.equal(out.length, 1)
+  assert.equal(out[0].traits.face, '')
+  assert.equal(out[0].traits.feature, '女仆')
+})
+
+test('人物设计档案：交进 selectPlannerContext 能按正文命中被选中', () => {
+  const chars = charactersFromDesignArchive(designArchive([
+    designChar('莉奈', { 外貌: 'silver hair' }),
+    designChar('塞西莉亚', { 外貌: 'green eyes' }),
+  ]))
+  const out = selectPlannerContext({ entries: [], selected: [], text: '莉奈端来茶。', definitions: { characters: chars }, backend: 'runninghub' })
+  const names = (out.diagnostics.includedCharacters || []).map(c => c.name)
+  assert.deepEqual(names, ['莉奈'])
 })
