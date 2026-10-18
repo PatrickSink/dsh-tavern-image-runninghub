@@ -692,8 +692,11 @@ let openImageOverlay = null
       const cancellationMayContinue = Boolean((item && item.data && item.data.cancelMayHaveContinued === true) || (replacement && (replacement.cancelMayHaveContinued === true || replacement.requestStarted === true)) || (currentPolledJob && currentPolledJob.state === 'cancelled' && currentPolledJob.requestStarted === true))
       const queryUnavailable = Boolean(currentPolledJob && currentPolledJob.state === 'uncertain' && currentPolledJob.backend === 'comfyui' && !currentPolledJob.comfyId)
       const statusLabel = ({ queued: '排队中', pending: '排队中', running: '生成中', processing: '生成中', done: '完成', ready: '完成', failed: '失败', cancelled: '已取消', uncertain: '状态待确认' })[taskState] || '状态待确认'
-      // 顺利出图时不再挂一行「完成」文案：图本身就是结果，状态行只在需要说明时出现。
-      const quietStatus = taskState === 'done' && !activeReplacement && !(item && item.status === 'failed')
+      // 顺利出图时不再挂一行文案：图本身就是结果，状态行只在需要说明时出现。
+      // 注意这里不能带 !activeReplacement —— 替换任务记录在出图完成后依然存在，
+      // 带上它就会让「替换任务完成」这行一直赖在图片下面不走（用户反馈的问题）。
+      // 状态行现在只看 taskState：不是 done 才需要说明。
+      const quietStatus = taskState === 'done' && !(item && item.status === 'failed')
       // 没有画面可看时（生成中／失败／已取消／待确认）也要给一块能点的占位：点一下、右键或长按
       // 都能打开提示词编辑器，改完重画。否则这些状态下页面只剩一行文字，用户没有任何出路
       //（失败后点重试、再马上取消，就会掉进这个死角）。
