@@ -185,6 +185,10 @@ test('attach-turn 两轮都正常挂图；人物外貌档案不再由插件写�
     onTimelineChanged(handler) { timeline = handler; return () => {} },
     onGameRemoved() { return () => {} },
     async getTurn({ turn }) { return state.current.turn === turn ? state.current : null },
+    // 本体的「设计人物」以本局世界书条目的形式被召回；插件靠 lore 拿到它并注入提示词。
+    async getCardContext() {
+      return { lore: [{ title: '人物设计 · Luna', keys: ['Luna'], content: '人物：Luna\n\n外貌：silver hair, blue eyes, tall' }] }
+    },
     async list() { return state.media },
     async readTurnData() { return state.snapshots.at(-1) ?? null },
     async saveTurnData({ turn, textVersion, data }) {
@@ -218,9 +222,12 @@ test('attach-turn 两轮都正常挂图；人物外貌档案不再由插件写�
   const first = await f.request('attach-turn', { gameId: 'story-game', turn: 1 })
   assert.equal(first.body.ok, true)
   assert.equal(first.body.attached, 1)
-  // 提示词里应指示 Agent 去读设计人物档案，而不是靠插件注入的白描
-  assert.match(state.systems[0], /character_design_read/)
-  assert.doesNotMatch(state.systems[0], /<可用绘图角色列表>/)
+  // 人物外貌由插件从本局世界书的「设计人物」条目注入（Agent 读不到档案：
+  // character_design_read 的调用权限只开放给人物设计任务，插件任务调用会被拒）。
+  assert.match(state.systems[0], /<可用绘图角色列表>/, '设计人物档案应由插件注入')
+  assert.match(state.systems[0], /silver hair/, '注入的应是设计人物档案里的外貌')
+  assert.match(state.systems[0], /worldbook_search/, '应指示用真正可用的工具补查人物')
+  assert.doesNotMatch(state.systems[0], /character_design_read/, '该工具在插件任务里不可用，不应出现在指示里')
 
   state.current = { ...state.current, turn: 2, textVersion: 'text-v2', text: 'Luna looks at the window.' }
   const second = await f.request('attach-turn', { gameId: 'story-game', turn: 2 })
