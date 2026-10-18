@@ -543,8 +543,11 @@ let openImageOverlay = null
       const mid = String(mediaId || '')
       if (!mid) return
       const want = String(jobId || '')
-      const before = String(mediaJobOverride.get(mid) || '')
-      if (want) mediaJobOverride.set(mid, want)
+      const prev = mediaJobOverride.get(mid)
+      const before = String((prev && prev.jobId) || '')
+      // 记 { jobId, at }：at 用作取图的防缓存参数。覆盖之后必须让浏览器重新拉图，
+      // 否则同一 URL 会命中旧图（Tavern 那边的 attachment 虽然换了，前端仍在用旧地址）。
+      if (want) mediaJobOverride.set(mid, { jobId: want, at: Date.now() })
       else mediaJobOverride.delete(mid)
       if (before === want) return
       reportHost('media-job-override', { mediaId: mid.slice(0, 12), jobId: want.slice(0, 8), before: before.slice(0, 8), listeners: mediaJobListeners.size })
@@ -568,8 +571,10 @@ let openImageOverlay = null
       const displayWidth = useImageWidth()
       // 订阅覆盖表：查看器写回后正文要立刻跟着换图
       useMediaJobOverride()
-      // 本地覆盖优先（见 mediaJobOverride 的说明）
-      const overrideJobId = String(mediaJobOverride.get(String(item && item.id || '')) || '')
+      // 本地覆盖优先（见 mediaJobOverride 的说明）。存的是 { jobId, at }，at 供取图防缓存用。
+      const override = mediaJobOverride.get(String(item && item.id || ''))
+      const overrideJobId = String((override && override.jobId) || '')
+      const overrideAt = Number((override && override.at) || 0)
       const jobId = String(overrideJobId || (item && item.data && item.data.jobId) || '')
       const replacement = item && item.data && item.data.replacement && typeof item.data.replacement === 'object' ? item.data.replacement : null
       // overrideJobId 必须排在最前。replacement 来自旧的 props，若让它优先就会把覆盖表
@@ -730,9 +735,14 @@ let openImageOverlay = null
       const activeReplacement = replacement && !recoveredReady
       const cachedImageReady = ['done', 'ready'].includes(String(currentPolledJob && currentPolledJob.state || replacement && replacement.state || ''))
         || String(item && item.status || '') === 'ready'
-      const src = recoveredReady
-        ? BASE + '/jobs?id=' + encodeURIComponent(effectiveJobId) + '&image=1'
-        : String(item && item.url || '') || (cachedImageReady && jobId && !(item && item.status === 'failed') && !(item && item.data && item.data.cancelled === true) ? BASE + '/jobs?id=' + encodeURIComponent(jobId) + '&image=1' : '')
+      // 有本地覆盖时直接走插件自己的取图路由（带 at 作防缓存参数）。
+      // 不能再用 item.url —— 那个地址按媒体项的 updatedAt 生成，而 Tavern 不会因为
+      // 我们改了数据就重新下发 props，地址里始终是旧版本号，浏览器很可能直接命中旧图。
+      const src = overrideJobId
+        ? BASE + '/jobs?id=' + encodeURIComponent(overrideJobId) + '&image=1&v=' + overrideAt
+        : recoveredReady
+          ? BASE + '/jobs?id=' + encodeURIComponent(effectiveJobId) + '&image=1'
+          : String(item && item.url || '') || (cachedImageReady && jobId && !(item && item.status === 'failed') && !(item && item.data && item.data.cancelled === true) ? BASE + '/jobs?id=' + encodeURIComponent(jobId) + '&image=1' : '')
       const jobMayHaveReachedProvider = Boolean(currentPolledJob && (currentPolledJob.requestMayHaveSucceeded === true || currentPolledJob.state === 'uncertain'))
       // 临时取证：确认组件渲染时最终用的到底是哪张作业（依赖在此处都已定义）。
       // 覆盖表已确认写入、监听器也确认存在，正文却没换 —— 只可能是这里算出来的值不对。
