@@ -111,6 +111,9 @@ let openImageOverlay = null
       'tavernui-attached', 'tavernui-missing', 'tavernui-marker-registered', 'tavernui-marker-failed',
       'tavernui-media-registered', 'tavernui-media-failed', 'tavernui-action-failed',
       'apply-start', 'seat-registered', 'seat-failed',
+      // 「关闭查看器时把选中的那张写回正文」这条路径的取证：
+      // 它全程静默过，出问题时看不到卡在哪一步，所以不受预算限制。
+      'apply-version-skip', 'apply-version-result', 'apply-version-threw',
     ])
 
     function reportFingerprint(stage, data) {
@@ -1789,14 +1792,32 @@ function versionsOf(jobId) {
         // shownIdForApply()，一调用就抛 ReferenceError；而 close 里是 void 调用，
         // 错误被静默吞掉 —— 表现就是「切成哪张都不生效，正文一直显示最新那张」。
         const job = String(shownId || '')
-        if (!mid || !job) return
+        const gid = String(view.gameId || lastSessionId || '')
+        // 这条路径过去全程静默（缺参数直接 return、请求失败被 catch 吞掉），
+        // 出问题时无从判断卡在哪一步。现在无论成败都把实情报回宿主，便于定位。
+        if (!mid || !job) {
+          reportHost('apply-version-skip', {
+            mediaId: mid.slice(0, 12), jobId: job.slice(0, 8), gameId: gid.slice(0, 12),
+            reason: !mid ? 'no-mediaId' : 'no-jobId',
+          })
+          return
+        }
         try {
           const r = await jsonFetch(BASE + '/apply-media-version', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ gameId: String(view.gameId || lastSessionId || ''), mediaId: mid, jobId: job }),
+            body: JSON.stringify({ gameId: gid, mediaId: mid, jobId: job }),
           })
-          if (r && r.ok && r.changed) reportHost('apply-version', { mediaId: mid.slice(0, 12), jobId: job.slice(0, 8) })
-        } catch { /* 写回失败不影响关闭 */ }
+          reportHost('apply-version-result', {
+            mediaId: mid.slice(0, 12), jobId: job.slice(0, 8),
+            ok: Boolean(r && r.ok), changed: Boolean(r && r.changed),
+            error: String((r && r.error) || '').slice(0, 160),
+          })
+        } catch (error) {
+          reportHost('apply-version-threw', {
+            mediaId: mid.slice(0, 12), jobId: job.slice(0, 8),
+            error: String((error && error.message) || error).slice(0, 200),
+          })
+        }
       }
       const close = () => { void applyCurrent(); openImageOverlay({ open: false, jobIds: [], note: '', working: false, index: 0, mediaId: '', gameId: '' }) }
 
