@@ -2068,14 +2068,17 @@ function versionsOf(jobId) {
               if (typeof confirm === 'function' && !confirm('删除这一张？正文、图片管理、本地缓存里的它都会一起删掉。')) return
               setActionBusy('delete'); setActionNote('')
               try {
-                // 只调 delete-job 就够了：后端在这个路由里会先摘掉正文上的媒体项
-                // （bridge.removeJobMedia），再删作业记录与缓存文件。
-                // 之前这里还多发了一次 media-action 的 delete，但那个 operation 并不存在
-                // （只支持 redraw/retry/cancel/recover），纯属多余调用。
-                // 另外参数名是 jobId，不是 id —— 传错就会收到「缺少 jobId」。
+                // 删完正文该显示哪张？由用户在这里停留的位置决定：
+                // 优先用列表里的「前一张」（他切换过程中看过的上一张），
+                // 没有前一张就用后一张；这一处只剩它自己时才传空（整处摘除）。
+                const rest = view.jobIds.filter(one => one !== shownId)
+                const nextShow = rest.length ? rest[Math.min(Math.max(0, at - 1), rest.length - 1)] : ''
+                // 只调 delete-job 就够了：后端会先处理正文上的媒体项 —— 改绑到 nextShow，
+                // 或在这一处没有别的图时摘除 —— 再删作业记录与缓存文件。
+                // 参数名是 jobId，不是 id，传错会收到「缺少 jobId」。
                 const d = await jsonFetch(BASE + '/delete-job', {
                   method: 'POST', headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ jobId: shownId }),
+                  body: JSON.stringify({ jobId: shownId, nextJobId: nextShow }),
                 }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
                 if (d && d.ok) {
                   if (typeof showToast === 'function') showToast('已删除这张图片')
