@@ -1785,7 +1785,10 @@ function versionsOf(jobId) {
       // 关闭时把最后停留的那张写回它所属的媒体项 —— 正文就显示这一张。
       const applyCurrent = async () => {
         const mid = String(view.mediaId || '')
-        const job = String(shownIdForApply() || '')
+        // 用 shownId（下面按 view.index 算出的那张）。这里原先误写成不存在的
+        // shownIdForApply()，一调用就抛 ReferenceError；而 close 里是 void 调用，
+        // 错误被静默吞掉 —— 表现就是「切成哪张都不生效，正文一直显示最新那张」。
+        const job = String(shownId || '')
         if (!mid || !job) return
         try {
           const r = await jsonFetch(BASE + '/apply-media-version', {

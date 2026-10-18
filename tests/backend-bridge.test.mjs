@@ -398,7 +398,7 @@ test('manual draw explicitly forces images and never inherits the smart skip opt
   } finally { f.bridge.dispose() }
 })
 
-test('manual redraw keeps the old image until its same-anchor replacement is ready', async () => {
+test('manual redraw adds the new image and keeps the old one (不替换)', async () => {
   let release, saving = false
   const gate = new Promise(resolve => { release = resolve })
   const f = fixture({ planMessage: async () => ({ plans: [image('replacement')] }), getJob: () => done('replacement') }, {
@@ -411,7 +411,8 @@ test('manual redraw keeps the old image until its same-anchor replacement is rea
     assert.equal(f.media.some(item => item.id === 'old-image'), true)
     release()
     assert.deepEqual(await task, { attached: 1, total: 1 })
-    assert.equal(f.media.some(item => item.id === 'old-image'), false)
+    // 新一批只往上加，旧图留在正文里（要它消失只能手动删除）
+    assert.equal(f.media.some(item => item.id === 'old-image'), true)
     assert.equal(f.media.some(item => item.data?.jobId === 'replacement' && item.status === 'ready'), true)
   } finally { release(); f.bridge.dispose() }
 })
@@ -426,18 +427,18 @@ test('manual redraw preserves prior images when the replacement fails', async ()
   } finally { f.bridge.dispose() }
 })
 
-test('a successful full redraw removes prior images whose anchors changed', async () => {
+test('a successful full redraw keeps prior images even when anchors changed', async () => {
   const f = fixture({ planMessage: async () => ({ plans: [image('new-scene')] }), getJob: () => done('new-scene') })
   f.media.push({ id: 'old-image', kind: 'dsh-tavern-image/image', textVersion: 'v1', anchor: '旧句子', status: 'ready', attachment: { id: 'old' } })
   try {
     const result = await f.bridge.attachTurn({ ...turn, manual: true, count: 1 })
     assert.deepEqual(result, { attached: 1, total: 1 })
-    assert.equal(f.media.some(item => item.id === 'old-image'), false)
+    assert.equal(f.media.some(item => item.id === 'old-image'), true)
     assert.equal(f.media.some(item => item.data?.jobId === 'new-scene' && item.status === 'ready'), true)
   } finally { f.bridge.dispose() }
 })
 
-test('a successful reduced-count redraw removes every remaining old image in the batch', async () => {
+test('a successful reduced-count redraw keeps every remaining old image in the batch', async () => {
   const f = fixture({ planMessage: async () => ({ plans: [image('only-new')] }), getJob: () => done('only-new') })
   for (const [id, anchor] of [['old-one', 'first'], ['old-two', 'second'], ['old-three', 'third']]) {
     f.media.push({ id, kind: 'dsh-tavern-comfy/image', textVersion: 'v1', anchor, status: 'ready', attachment: { id } })
@@ -445,18 +446,18 @@ test('a successful reduced-count redraw removes every remaining old image in the
   try {
     const result = await f.bridge.attachTurn({ ...turn, manual: true, count: 1 })
     assert.deepEqual(result, { attached: 1, total: 1 })
-    assert.equal(f.media.filter(item => ['old-one', 'old-two', 'old-three'].includes(item.id)).length, 0)
+    assert.equal(f.media.filter(item => ['old-one', 'old-two', 'old-three'].includes(item.id)).length, 3)
   } finally { f.bridge.dispose() }
 })
 
-test('a partial manual redraw replaces matching successes and keeps unmatched old media', async () => {
+test('a partial manual redraw keeps both matching and unmatched old media', async () => {
   const f = fixture({ planMessage: async () => ({ plans: [{ ...image('success'), mount: 'first' }, { ...image('failed'), mount: 'second' }] }), getJob: id => id === 'success' ? done(id) : ({ state: 'failed', error: 'GPU failed' }) })
   f.media.push({ id: 'old-matching', kind: 'dsh-tavern-image/image', textVersion: 'v1', anchor: 'first', status: 'ready', attachment: { id: 'old-1' } })
   f.media.push({ id: 'old-unmatched', kind: 'dsh-tavern-comfy/image', textVersion: 'v1', anchor: 'second', status: 'ready', attachment: { id: 'old-2' } })
   try {
     const result = await f.bridge.attachTurn({ ...turn, manual: true, count: 2 })
     assert.deepEqual(result, { attached: 1, total: 2 })
-    assert.equal(f.media.some(item => item.id === 'old-matching'), false)
+    assert.equal(f.media.some(item => item.id === 'old-matching'), true)
     assert.equal(f.media.some(item => item.id === 'old-unmatched'), true)
   } finally { f.bridge.dispose() }
 })
@@ -472,14 +473,14 @@ test('a fully failed manual redraw preserves all old snapshot items, including p
   } finally { f.bridge.dispose() }
 })
 
-test('batch cleanup leaves other plugin kinds and other text versions untouched', async () => {
+test('adding a batch leaves every prior media untouched, including other kinds and versions', async () => {
   const f = fixture({ planMessage: async () => ({ plans: [image('new-scene')] }), getJob: () => done('new-scene') })
   f.media.push({ id: 'old-current', kind: 'dsh-tavern-image/image', textVersion: 'v1', anchor: 'old', status: 'ready', attachment: { id: 'old' } })
   f.media.push({ id: 'other-plugin', kind: 'another-plugin/image', textVersion: 'v1', anchor: 'other', status: 'ready', attachment: { id: 'other' } })
   f.media.push({ id: 'other-version', kind: 'dsh-tavern-comfy/image', textVersion: 'v2', anchor: 'old', status: 'ready', attachment: { id: 'v2' } })
   try {
     await f.bridge.attachTurn({ ...turn, manual: true, count: 1 })
-    assert.equal(f.media.some(item => item.id === 'old-current'), false)
+    assert.equal(f.media.some(item => item.id === 'old-current'), true)
     assert.equal(f.media.some(item => item.id === 'other-plugin'), true)
     assert.equal(f.media.some(item => item.id === 'other-version'), true)
   } finally { f.bridge.dispose() }
