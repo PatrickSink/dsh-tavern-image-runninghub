@@ -758,7 +758,16 @@ let openImageOverlay = null
       }, [overrideJobId, activeJobId, jobId, effectiveJobId, recoveredReady, src])
       const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (replacement && replacement.state === 'uncertain' && !recoveredReady))
       const isCancelled = !recoveredReady && (Boolean(item && item.data && item.data.cancelled === true) || Boolean(currentPolledJob && currentPolledJob.state === 'cancelled') || Boolean(replacement && replacement.state === 'cancelled'))
-      const taskState = recoveredReady ? 'done' : isUncertain ? 'uncertain' : isCancelled ? 'cancelled' : String(currentPolledJob && currentPolledJob.state || replacement && replacement.state || (item && item.status === 'failed' ? 'failed' : item && item.status === 'pending' ? 'pending' : 'done'))
+      // taskState 的取值顺序很关键。媒体项自己还在排队（item.status === 'pending'）时以它为准：
+      // replacement 可能是上一次替换留下的陈旧记录（state 已经是 ready），它排在前面会把
+      // 「正在生成」一路压成「已完成」，于是右下角那行提示根本不出现（用户反馈「生图的提示没有了」）。
+      const taskState = recoveredReady ? 'done' : isUncertain ? 'uncertain' : isCancelled ? 'cancelled' : String(
+        currentPolledJob && currentPolledJob.state
+        || (item && item.status === 'pending' ? 'pending' : '')
+        || replacement && replacement.state
+        || (item && item.status === 'failed' ? 'failed' : '')
+        || 'done',
+      )
       const cancellationMayContinue = Boolean((item && item.data && item.data.cancelMayHaveContinued === true) || (replacement && (replacement.cancelMayHaveContinued === true || replacement.requestStarted === true)) || (currentPolledJob && currentPolledJob.state === 'cancelled' && currentPolledJob.requestStarted === true))
       const queryUnavailable = Boolean(currentPolledJob && currentPolledJob.state === 'uncertain' && currentPolledJob.backend === 'comfyui' && !currentPolledJob.comfyId)
       const statusLabel = ({ queued: '排队中', pending: '排队中', running: '生成中', processing: '生成中', done: '完成', ready: '完成', failed: '失败', cancelled: '已取消', uncertain: '状态待确认' })[taskState] || '状态待确认'
