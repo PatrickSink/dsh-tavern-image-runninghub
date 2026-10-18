@@ -1830,8 +1830,6 @@ function versionsOf(jobId) {
           if (!g.moved && zoom > 1) reset()
           return
         }
-        // swipe 模式下没怎么动也算轻点
-        if (g.mode === 'swipe' && !g.moved && zoom > 1) reset()
       }, [zoom, total, go, reset])
 
       // 桌面端：滚轮缩放，按住拖动平移；双击复位
@@ -1840,18 +1838,41 @@ function versionsOf(jobId) {
         setZoom(z => Math.max(1, Math.min(6, z * (event.deltaY > 0 ? 0.9 : 1.1))))
       }, [])
       const onMouseDown = React.useCallback(event => {
-        if (zoom <= 1) return
         event.preventDefault()
-        gesture.current = { mode: 'pan', startX: event.clientX, startY: event.clientY, startPos: { ...pos }, moved: false }
+        gesture.current = {
+          mode: zoom > 1 ? 'pan' : 'swipe',
+          startX: event.clientX, startY: event.clientY,
+          startPos: { ...pos }, moved: false, swipeX: 0,
+        }
         setDragging(true)
       }, [zoom, pos])
       const onMouseMove = React.useCallback(event => {
         const g = gesture.current
-        if (!g || g.mode !== 'pan') return
-        g.moved = true
-        setPos({ x: g.startPos.x + (event.clientX - g.startX), y: g.startPos.y + (event.clientY - g.startY) })
+        if (!g) return
+        const dx = event.clientX - g.startX
+        const dy = event.clientY - g.startY
+        if (!g.moved && Math.hypot(dx, dy) > 6) g.moved = true
+        if (g.mode === 'pan') {
+          setPos({ x: g.startPos.x + dx, y: g.startPos.y + dy })
+          return
+        }
+        if (g.mode === 'swipe') {
+          g.swipeX = dx
+          setSwipeX(dx)
+        }
       }, [])
-      const onMouseUp = React.useCallback(() => { gesture.current = null; setDragging(false) }, [])
+      const onMouseUp = React.useCallback(() => {
+        const g = gesture.current
+        gesture.current = null
+        setDragging(false)
+        if (!g) return
+        if (g.mode === 'swipe') {
+          if (Math.abs(g.swipeX || 0) > 60 && total > 1) go((g.swipeX || 0) < 0 ? 1 : -1)
+          else setSwipeX(0)
+          return
+        }
+        if (g.mode === 'pan' && !g.moved && zoom > 1) reset()
+      }, [total, go, reset, zoom])
       const onDoubleClick = React.useCallback(() => { if (zoom > 1) reset() }, [zoom, reset])
 
       if (!view.open) return null
@@ -1904,7 +1925,13 @@ function versionsOf(jobId) {
         // 图片区：横滑切图、双指缩放、放大后拖动
         React.createElement('div', {
           ref: areaRef,
-          style: { flex: '1 1 auto', minHeight: 0, position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+          style: {
+            flex: '1 1 auto', minHeight: 0, position: 'relative', overflow: 'hidden',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            // 必须在这里也声明：touch-action 不继承，只写外层的话图片区仍是 auto，
+            // 移动端浏览器会先把横滑当成滚动/缩放吃掉，React 的 preventDefault 拦不住。
+            touchAction: 'none',
+          },
           onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd,
           onWheel, onMouseDown, onMouseMove, onMouseUp, onMouseLeave: onMouseUp, onDoubleClick,
         },
