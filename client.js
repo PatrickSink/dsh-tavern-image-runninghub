@@ -1316,23 +1316,44 @@ function versionsOf(jobId) {
         // 这张图自己的重画版本链（独立于整场翻页）
         const chain = versionsOf(id)
 
-        // 翻页范围只限**这一处插图**：作业记录了 mount（正文里被挂载的那句话），
-        // 同一 mount 的作业属于同一个位置；不再把整场对话的图混在一起翻。
-        // 旧的作业没有 mount（那时还没记），这时退回这张图自己的重画版本链。
+        // 翻页范围 = **这张图所属的那一轮正文**，不再把整个对话的图混在一起翻。
+        //
+        // 为什么不按「同一句话」（mount）分组：一次规划在每个锚点只出一张图，同一句话
+        // 通常就一张，分完只剩自己，滑动永远没内容。而一轮会出 2~3 张（分散在正文各段），
+        // 既能滑动、又不会翻到几十轮之前去。
+        //
+        // 分组的键是 gameId + textVersion：textVersion 标明「这一轮的哪个正文版本」，
+        // 作业从很早就在存它（tab 切换、重写都会换版本），所以旧数据也能用。
+        // 同组内把这张图的重画版本链并进来，并去重。
         let list = []
         try {
           const r = await jsonFetch(BASE + '/history')
           const history = (r && Array.isArray(r.jobs)) ? r.jobs : []
           const withImage = history.filter(job => job && job.id && (job.hasImage || job.byteLength))
           const self = withImage.find(job => String(job.id) === id)
-          const mount = String((self && self.mount) || '')
-          if (mount) {
+          // 分组的键：优先 textVersion（标明同一轮的那个正文版本）；它为空的老作业
+          // 退回 gameId + turn（这两个字段作业从早期就在存）。两者都取不到才不分组。
+          const groupOf = job => {
+            const v = String((job && job.textVersion) || '')
+            if (v) return 'v:' + v
+            const g = String((job && job.gameId) || ''), t = job && job.turn
+            if (g && Number.isFinite(t)) return 't:' + g + '#' + t
+            return ''
+          }
+          const key = groupOf(self)
+          if (key) {
             list = withImage
-              .filter(job => String(job.mount || '') === mount)
+              .filter(job => groupOf(job) === key)
               .map(job => String(job.id))
               .reverse()
           }
         } catch { /* 拿不到历史就退回版本链 */ }
+        // 只有拿到位置信息（上面那个 key）时才做同组翻页；否则退回这张图自己的版本链 ——
+        // 导入的历史图片没有 gameId/turn/textVersion，若不加这层兜底，它们会全部落进同一组，
+        // 又变成「翻到别处」。
+        if (list.length) {
+          for (const extra of chain) if (!list.includes(extra)) list.push(extra)
+        }
         if (!list.includes(id)) list = chain.length ? chain : [id]
 
         const at = Math.max(0, list.indexOf(id))
