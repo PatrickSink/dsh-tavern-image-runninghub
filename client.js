@@ -116,6 +116,8 @@ let openImageOverlay = null
       'apply-version-skip', 'apply-version-result', 'apply-version-threw',
       // 覆盖表写入（含监听器数量）：确认「切图后正文换图」这条链路走到了哪一步。
       'media-job-override',
+      // 插图渲染时最终用的作业号：排查「覆盖表写了但正文没换」用的取证，一旦拿到结论就删。
+      'official-image-render',
     ])
 
     function reportFingerprint(stage, data) {
@@ -652,6 +654,21 @@ let openImageOverlay = null
 
       useEffect(() => { activeActionJobId.current = ''; setPolledJob(null); setActionJobId('') }, [item && item.id])
       const effectiveJobId = String(actionJobId || activeJobId)
+
+      // 临时取证：确认组件渲染时最终用的到底是哪张作业。
+      // 覆盖表已确认写入、监听器也确认存在，正文却没换 —— 只可能是这里算出来的值不对，
+      // 或者被 polledJob / actionJobId 覆盖掉了。查清这一层就能定位到底。
+      useEffect(() => {
+        reportHost('official-image-render', {
+          mediaId: String(item && item.id || '').slice(0, 14),
+          override: overrideJobId.slice(0, 8),
+          active: activeJobId.slice(0, 8),
+          effective: effectiveJobId.slice(0, 8),
+          polled: String(polledJob && polledJob.id || '').slice(0, 8),
+          action: String(actionJobId || '').slice(0, 8),
+          recovered: recoveredReady,
+        })
+      }, [overrideJobId, activeJobId, effectiveJobId, recoveredReady, polledJob, actionJobId])
 
       // Poll only this media item's active job. GET is safe to retry; paid POSTs below are single-flight.
       useEffect(() => {
