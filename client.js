@@ -5251,7 +5251,32 @@ function versionsOf(jobId) {
             } catch (error) { reportHost('character-history-panel-failed', { error: String(error?.message ?? error).slice(0, 160) }) }
           }
           try {
+            // 生图任务在后台跑，/attach-turn 只是「提交」。所以提交之后必须继续等：
+            // 否则 run 一返回，Tavern 的 busy 状态就结束了，按钮会变回可点 —— 而图还在
+            // 生成中，用户再点一次就是重复下单。
+            const readTasks = async () => {
+              const r = await jsonFetch(BASE + '/state').catch(() => null)
+              return (r && Array.isArray(r.tasks) ? r.tasks : [])
+            }
+            const runningTasks = list => list.filter(t => t && t.state === 'running')
+            const waitForTasksIdle = async (timeoutMs = 300000) => {
+              const until = Date.now() + timeoutMs
+              // 先给宿主一点时间把任务登记上，免得刚提交就查、查到空列表直接放行
+              await new Promise(resolve => setTimeout(resolve, 1200))
+              while (Date.now() < until) {
+                if (!runningTasks(await readTasks()).length) return true
+                await new Promise(resolve => setTimeout(resolve, 1500))
+              }
+              return false
+            }
+
             const runMessageDraw = createMessageDrawRunner(async context => {
+              // 已经在生图就别再提交：既不会有第二份结果，还会重复扣费。
+              if (runningTasks(await readTasks()).length) {
+                if (typeof showToast === 'function') showToast('正在生图中，请等这一轮出图')
+                reportHost('draw-blocked', { reason: 'task-running' })
+                return { ok: false, error: 'task-running' }
+              }
               const r = await jsonFetch(BASE + '/attach-turn', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
@@ -5266,6 +5291,8 @@ function versionsOf(jobId) {
                 else if (r && r.ok && r.skipped) showToast('本轮自动跳过配图：' + (r.reason || '没有合适的画面'))
                 else showToast('生图没出画面：' + ((r && r.error) || '规划没有产出画面'))
               }
+              // 提交成功就继续等任务结束，让按钮在整个生成期间保持「生图中…」且不可点
+              if (r && r.ok && r.attached) await waitForTasksIdle()
               return r
             }, () => { if (typeof showToast === 'function') showToast('正在提交，等待本轮正文数据…') })
             const off = ui.registerMessageAction({
