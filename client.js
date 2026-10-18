@@ -752,7 +752,9 @@ let openImageOverlay = null
           // 带上 displayMediaContext（gameId/mediaId/textVersion/turn 都齐）：查看器里的
           // 「再次生图」与「关闭时写回正文」都要这几个字段，缺了会被判「参数无效」。
           onClick: () => { if (Date.now() < suppressTapUntil.current) return; viewImage(displayJobId, title, displayMediaContext) },
-          onDoubleClick: () => { cancelPress(); openWidthBar() },
+          // 「显示大小」控制条已按用户要求去掉：它由双击（桌面）与两次快速轻点（手机）触发，
+          // 而手机上连点两下太容易误触 —— 点开图片时经常莫名弹出，很打扰。
+          // 组件与保存逻辑保留在下面，只是不再有入口。
           onContextMenu: event => {
             cancelPress()
             event.preventDefault()
@@ -762,20 +764,9 @@ let openImageOverlay = null
           onMouseDown: event => { if (event.button === 0) beginPress(displayJobId, title, displayMediaContext) },
           onMouseUp: cancelPress, onMouseLeave: cancelPress,
           onTouchStart: () => beginPress(displayJobId, title, displayMediaContext),
-          // 手机上 dblclick 不可靠：认两次快速轻点（≤320ms）打开宽度控制条，
-          // 并短暂屏蔽随后合成的 click，免得同时又弹出全屏大图。
-          onTouchEnd: event => {
-            cancelPress()
-            const now = Date.now()
-            if (now - lastTapAt.current <= 320) {
-              lastTapAt.current = 0
-              suppressTapUntil.current = now + 600
-              if (event.cancelable) event.preventDefault()
-              openWidthBar()
-              return
-            }
-            lastTapAt.current = now
-          },
+          // 触摸抬手只做「取消长按」这一件事。原先这里还认「两次快速轻点（≤320ms）」
+          // 去打开显示大小控制条 —— 太容易误触，已去掉（连同桌面的 onDoubleClick）。
+          onTouchEnd: () => { cancelPress() },
           onTouchMove: cancelPress,
         }) : placeholder,
         imgError ? h('div', { style: noteStyle }, imgRetry >= 20 ? '图取不到（' + imgError + '）　' : '正在取回…（第 ' + imgRetry + ' 次）', imgRetry >= 20 ? h('button', { type: 'button', onClick: () => { setImgError(''); setImgRetry(0); setImgNonce(x => x + 1) } }, '重新读取') : null) : null,
