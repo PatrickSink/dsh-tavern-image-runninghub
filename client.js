@@ -1335,12 +1335,13 @@ function versionsOf(jobId) {
           const history = (r && Array.isArray(r.jobs)) ? r.jobs : []
           const withImage = history.filter(job => job && job.id && (job.hasImage || job.byteLength))
           const self = withImage.find(job => String(job.id) === id)
-          // 「这一处插图」= 同一 mount（正文里被挂载的那句话）。一轮会出好几张，
-          // 但它们挂在不同句子下，属于不同位置，绝不能混成一组一起翻。
-          const mount = String((self && self.mount) || '')
-          if (mount) {
+          // 「这一处插图」由后端给的 group 决定：有 mount 就用 mount（正文被挂载的那句话），
+          // 老作业没有 mount 就退回 media-replacement 里的媒体项 id —— 同一个媒体项的多张
+          // 本来就是同一处图的多个版本。取不到 group 就不分组（只留它自己）。
+          const group = String((self && self.group) || '')
+          if (group) {
             list = withImage
-              .filter(job => String(job.mount || '') === mount)
+              .filter(job => String(job.group || '') === group)
               .map(job => String(job.id))
               .reverse()
           }
