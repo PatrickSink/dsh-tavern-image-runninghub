@@ -1335,29 +1335,20 @@ function versionsOf(jobId) {
           const history = (r && Array.isArray(r.jobs)) ? r.jobs : []
           const withImage = history.filter(job => job && job.id && (job.hasImage || job.byteLength))
           const self = withImage.find(job => String(job.id) === id)
-          // 分组的键：优先 textVersion（标明同一轮的那个正文版本）；它为空的老作业
-          // 退回 gameId + turn（这两个字段作业从早期就在存）。两者都取不到才不分组。
-          const groupOf = job => {
-            const v = String((job && job.textVersion) || '')
-            if (v) return 'v:' + v
-            const g = String((job && job.gameId) || ''), t = job && job.turn
-            if (g && Number.isFinite(t)) return 't:' + g + '#' + t
-            return ''
-          }
-          const key = groupOf(self)
-          if (key) {
+          // 「这一处插图」= 同一 mount（正文里被挂载的那句话）。一轮会出好几张，
+          // 但它们挂在不同句子下，属于不同位置，绝不能混成一组一起翻。
+          const mount = String((self && self.mount) || '')
+          if (mount) {
             list = withImage
-              .filter(job => groupOf(job) === key)
+              .filter(job => String(job.mount || '') === mount)
               .map(job => String(job.id))
               .reverse()
           }
         } catch { /* 拿不到历史就退回版本链 */ }
-        // 只有拿到位置信息（上面那个 key）时才做同组翻页；否则退回这张图自己的版本链 ——
-        // 导入的历史图片没有 gameId/turn/textVersion，若不加这层兜底，它们会全部落进同一组，
-        // 又变成「翻到别处」。
-        if (list.length) {
-          for (const extra of chain) if (!list.includes(extra)) list.push(extra)
-        }
+        // 这张图自己的重画版本也并进来（重画不换 mount，所以本来就在上面那组里；
+        // 这里兜住历史拉取失败、或旧作业没有 mount 的情况）。
+        // 没有位置信息时不按轮次兜底 —— 那会把不同位置的图混在一起（曾经的错误做法）。
+        for (const extra of chain) if (!list.includes(extra)) list.push(extra)
         if (!list.includes(id)) list = chain.length ? chain : [id]
 
         const at = Math.max(0, list.indexOf(id))
@@ -1374,6 +1365,10 @@ function versionsOf(jobId) {
             + (chain.length > 1 ? '　（这张有 ' + chain.length + ' 个重画版本）' : ''),
           mediaId,
           gameId,
+          // 「再次生图」走的是 media-action 的 redraw，而它要求 mediaContext 六个字段齐全
+          // （gameId / mediaId / jobId / textVersion / turn）。这里一并带出去。
+          textVersion: String((self && self.textVersion) || ''),
+          turn: self && Number.isFinite(self.turn) ? self.turn : null,
         })
       } catch { /* 看图失败不影响正文 */ }
     }
@@ -1756,6 +1751,7 @@ function versionsOf(jobId) {
       const [detail, setDetail] = React.useState(null)
       const [actionBusy, setActionBusy] = React.useState('')
       const [actionNote, setActionNote] = React.useState('')
+      const [hot, setHot] = React.useState('')
       // 手势状态机：pinch(双指缩放) / pan(放大后拖动) / swipe(横滑切图) / tap(轻点)
       const gesture = React.useRef(null)
       const areaRef = React.useRef(null)
@@ -1828,8 +1824,11 @@ function versionsOf(jobId) {
           return
         }
         const t = touches[0]
+        // 滑动切换已取消（从屏幕边缘往内滑会拉出侧边栏）：未放大时不做任何单指手势，
+        // 切换只走左右点击热区。放大后仍是拖动平移。
+        if (zoom <= 1) return
         gesture.current = {
-          mode: zoom > 1 ? 'pan' : 'swipe',
+          mode: 'pan',
           startX: t.clientX, startY: t.clientY,
           startPos: { ...pos }, moved: false, swipeX: 0, atEdge: false,
         }
@@ -1855,18 +1854,12 @@ function versionsOf(jobId) {
           const box = areaRef.current?.getBoundingClientRect()
           const limitX = box ? Math.max(0, (box.width * (zoom - 1)) / 2) : Infinity
           const limitY = box ? Math.max(0, (box.height * (zoom - 1)) / 2) : Infinity
-          const nx = Math.max(-limitX, Math.min(limitX, g.startPos.x + dx))
-          const ny = Math.max(-limitY, Math.min(limitY, g.startPos.y + dy))
-          // 横向已经顶到边还继续往同方向滑 → 转成切图手势（放大状态下也能翻页）
-          const pushing = (dx > 0 && g.startPos.x >= limitX - 1) || (dx < 0 && g.startPos.x <= -limitX + 1)
-          if (total > 1 && pushing && Math.abs(dx) > Math.abs(dy) + 12) {
-            g.mode = 'swipe'
-            g.atEdge = true
-            g.startX = t.clientX - (g.swipeX || 0)
-          } else if (!g.atEdge) {
-            setPos({ x: nx, y: ny })
-            return
-          }
+          // 纯平移：拖到边界就停住。不再由「顶到边继续滑」转成切图 —— 滑动切换已整体取消。
+          setPos({
+            x: Math.max(-limitX, Math.min(limitX, g.startPos.x + dx)),
+            y: Math.max(-limitY, Math.min(limitY, g.startPos.y + dy)),
+          })
+          return
         }
         if (g.mode === 'swipe') {
           event.preventDefault()
@@ -1902,9 +1895,11 @@ function versionsOf(jobId) {
         setZoom(z => Math.max(1, Math.min(6, z * (event.deltaY > 0 ? 0.9 : 1.1))))
       }, [])
       const onMouseDown = React.useCallback(event => {
+        // 同上：未放大时不接管鼠标拖拽，切换交给左右热区
+        if (zoom <= 1) return
         event.preventDefault()
         gesture.current = {
-          mode: zoom > 1 ? 'pan' : 'swipe',
+          mode: 'pan',
           startX: event.clientX, startY: event.clientY,
           startPos: { ...pos }, moved: false, swipeX: 0,
         }
@@ -1966,7 +1961,8 @@ function versionsOf(jobId) {
       },
         // 顶部：标题 + 缩略图条（当前张高亮，标示它在全部图片里的位置）
         React.createElement('div', {
-          style: { flex: '0 0 auto', padding: '10px 14px 8px' },
+          // order 决定视觉顺序：顶部1 → 图片2 → 按钮3 → 参数4（不改 DOM 结构）
+          style: { flex: '0 0 auto', order: 1, padding: '10px 14px 8px' },
           onClick: event => event.stopPropagation(),
         },
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' } },
@@ -1988,7 +1984,8 @@ function versionsOf(jobId) {
         imageWarning ? React.createElement('div', { role: 'status', style: { color: '#e2b93b', fontSize: '12px', textAlign: 'center', padding: '8px 10px', margin: '0 14px 8px', background: 'rgba(226,185,59,.1)', borderRadius: '8px' } }, imageWarning) : null,
         // ── 图片操作：再次生图 / 下载 / 查看参数 / 删除 ────────────────────
         React.createElement('div', {
-          style: { flex: '0 0 auto', display: 'flex', justifyContent: 'center', gap: '8px', padding: '0 14px 10px', position: 'relative', zIndex: 2147483007 },
+          // order:3 —— 排在图片下方；两侧留出 26px，四个按钮不再贴着屏幕边（问题7）
+          style: { flex: '0 0 auto', order: 3, display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px', padding: '6px 26px 10px', position: 'relative', zIndex: 2147483007 },
           onClick: event => event.stopPropagation(),
         },
           React.createElement('button', {
@@ -1999,7 +1996,15 @@ function versionsOf(jobId) {
               try {
                 const r = await jsonFetch(BASE + '/media-action', {
                   method: 'POST', headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ operation: 'redraw', gameId: String(view.gameId || lastSessionId || ''), jobId: shownId, mediaId: String(view.mediaId || '') }),
+                  body: JSON.stringify({
+                    operation: 'redraw',
+                    gameId: String(view.gameId || lastSessionId || ''),
+                    mediaId: String(view.mediaId || ''),
+                    jobId: shownId,
+                    // redraw 要求 mediaContext 六个字段齐全，缺一就会被拒（之前就是缺这两个）
+                    textVersion: String(view.textVersion || ''),
+                    turn: view.turn,
+                  }),
                 }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
                 if (r && r.ok) { setActionNote('已提交重画，出图后自动替换') }
                 else setActionNote('重画失败：' + ((r && r.error) || '未知原因'))
@@ -2058,7 +2063,7 @@ function versionsOf(jobId) {
         actionNote ? React.createElement('div', { style: { flex: '0 0 auto', color: '#9aa3b2', fontSize: '12px', textAlign: 'center', padding: '0 14px 8px' } }, actionNote) : null,
         showParams && detail ? React.createElement('div', {
           style: {
-            flex: '0 1 auto', maxHeight: '46vh', overflowY: 'auto', margin: '0 14px 10px', padding: '12px 14px',
+            flex: '0 1 auto', order: 4, maxHeight: '46vh', overflowY: 'auto', margin: '0 14px 10px', padding: '12px 14px',
             background: 'rgba(20,24,32,.92)', border: '1px solid rgba(160,180,210,.28)', borderRadius: '10px',
             fontSize: '12px', lineHeight: 1.75, color: '#c8d2e0', position: 'relative', zIndex: 2147483007,
           },
@@ -2077,7 +2082,8 @@ function versionsOf(jobId) {
         React.createElement('div', {
           ref: areaRef,
           style: {
-            flex: showParams ? '0 1 auto' : '1 1 auto', minHeight: 0, position: 'relative', overflow: 'hidden',
+            // order:2 —— 图片排在顶部条之后、操作按钮之前
+            flex: showParams ? '0 1 auto' : '1 1 auto', order: 2, minHeight: 0, position: 'relative', overflow: 'hidden',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             // 必须在这里也声明：touch-action 不继承，只写外层的话图片区仍是 auto，
             // 移动端浏览器会先把横滑当成滚动/缩放吃掉，React 的 preventDefault 拦不住。
@@ -2086,22 +2092,29 @@ function versionsOf(jobId) {
           onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd,
           onWheel, onMouseDown, onMouseMove, onMouseUp, onMouseLeave: onMouseUp, onDoubleClick,
         },
-          // 左右点击热区：从屏幕边缘往内滑会被侧边栏截走，所以除了滑动也提供点击。
-          // 只在未放大时挂上，免得挡住放大后的拖动。
+          // 左右点击热区：从屏幕边缘往内滑会拉出侧边栏，所以切换改成点图片两侧。
+          // 只在未放大时挂上，免得挡住放大后的拖动。按下时只叠一层很淡的深色，
+          // 不用亮色 —— 在半透明黑底上亮块会很突兀。
           total > 1 && zoom <= 1 ? React.createElement('button', {
             type: 'button', title: '上一张', 'aria-label': '上一张',
             onClick: event => { event.stopPropagation(); go(-1) },
+            onMouseEnter: () => setHot('left'), onMouseLeave: () => setHot(''),
+            onTouchStart: () => setHot('left'), onTouchEnd: () => setHot(''),
             style: {
-              position: 'absolute', left: 0, top: 0, bottom: 0, width: '28%',
-              background: 'transparent', border: 'none', cursor: 'pointer', zIndex: 6, padding: 0,
+              position: 'absolute', left: 0, top: 0, bottom: 0, width: '26%',
+              background: hot === 'left' ? 'rgba(0,0,0,.20)' : 'transparent',
+              border: 'none', cursor: 'pointer', zIndex: 6, padding: 0, transition: 'background .15s',
             },
           }) : null,
           total > 1 && zoom <= 1 ? React.createElement('button', {
             type: 'button', title: '下一张', 'aria-label': '下一张',
             onClick: event => { event.stopPropagation(); go(1) },
+            onMouseEnter: () => setHot('right'), onMouseLeave: () => setHot(''),
+            onTouchStart: () => setHot('right'), onTouchEnd: () => setHot(''),
             style: {
-              position: 'absolute', right: 0, top: 0, bottom: 0, width: '28%',
-              background: 'transparent', border: 'none', cursor: 'pointer', zIndex: 6, padding: 0,
+              position: 'absolute', right: 0, top: 0, bottom: 0, width: '26%',
+              background: hot === 'right' ? 'rgba(0,0,0,.20)' : 'transparent',
+              border: 'none', cursor: 'pointer', zIndex: 6, padding: 0, transition: 'background .15s',
             },
           }) : null,
           shownId ? React.createElement('img', {
@@ -2122,7 +2135,7 @@ function versionsOf(jobId) {
         React.createElement('div', {
           style: { flex: '0 0 auto', color: '#8b95a5', fontSize: '12px', textAlign: 'center', padding: '8px 12px 14px' },
         }, total > 1
-          ? '左右滑动或点图片两侧切换　·　双指放大，放大后拖动，轻点复原　·　点空白处关闭'
+          ? '点图片两侧切换　·　双指放大，放大后拖动，轻点复原　·　点空白处关闭'
           : '双指放大，放大后拖动，轻点复原　·　点空白处关闭'),
       )
     }
