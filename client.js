@@ -2007,10 +2007,11 @@ function versionsOf(jobId) {
         ),
         view.working ? React.createElement('div', { style: { color: '#9aa3b2', fontSize: '14px', padding: '30px 0', textAlign: 'center' } }, '规划中，通常十几秒…') : null,
         imageWarning ? React.createElement('div', { role: 'status', style: { color: '#e2b93b', fontSize: '12px', textAlign: 'center', padding: '8px 10px', margin: '0 14px 8px', background: 'rgba(226,185,59,.1)', borderRadius: '8px' } }, imageWarning) : null,
-        // ── 图片操作：再次生图 / 下载 / 查看参数 / 删除 ────────────────────
+        // ── 图片操作：生图 / 下载 / 参数 / 删除 ────────────────────
         React.createElement('div', {
-          // order:3 —— 排在图片下方；两侧留出 26px，四个按钮不再贴着屏幕边（问题7）
-          style: { flex: '0 0 auto', order: 3, display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px', padding: '6px 26px 10px', position: 'relative', zIndex: 2147483007 },
+          // order:3 —— 排在图片下方。按钮文字压到两个字后一行放得下，
+          // 所以改成 nowrap 不再换行；左右留 16px，避免贴屏边。
+          style: { flex: '0 0 auto', order: 3, display: 'flex', flexWrap: 'nowrap', justifyContent: 'center', alignItems: 'center', gap: '8px', padding: '6px 16px 10px', boxSizing: 'border-box', position: 'relative', zIndex: 2147483007 },
           onClick: event => event.stopPropagation(),
         },
           React.createElement('button', {
@@ -2036,14 +2037,14 @@ function versionsOf(jobId) {
               } finally { setActionBusy('') }
             },
             style: actionBtnStyle(Boolean(actionBusy) || !shownId),
-          }, actionBusy === 'redraw' ? '🎨 提交中…' : '🎨 再次生图'),
+          }, actionBusy === 'redraw' ? '🎨 提交' : '🎨 生图'),
 
           React.createElement('a', {
             href: shownId ? (BASE + '/jobs?id=' + encodeURIComponent(shownId) + '&image=1') : '#',
             download: 'illustration-' + String(shownId || '').slice(0, 8) + '.png',
             onClick: event => { event.stopPropagation(); if (!shownId) event.preventDefault() },
             style: Object.assign(actionBtnStyle(!shownId), { textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }),
-          }, '⬇ 下载图片'),
+          }, '⬇ 下载'),
 
           React.createElement('button', {
             type: 'button', disabled: !shownId,
@@ -2058,7 +2059,7 @@ function versionsOf(jobId) {
               } finally { setActionBusy('') }
             },
             style: actionBtnStyle(!shownId),
-          }, showParams ? '🔼 收起参数' : '📋 查看参数'),
+          }, showParams ? '🔼 收起' : '📋 参数'),
 
           React.createElement('button', {
             type: 'button', disabled: Boolean(actionBusy) || !shownId,
@@ -2083,7 +2084,7 @@ function versionsOf(jobId) {
               } finally { setActionBusy('') }
             },
             style: Object.assign(actionBtnStyle(Boolean(actionBusy) || !shownId), { borderColor: 'rgba(242,104,107,.55)', color: '#f2686b' }),
-          }, actionBusy === 'delete' ? '删除中…' : '🗑 删除图片'),
+          }, actionBusy === 'delete' ? '删除' : '🗑 删除'),
         ),
         // 「已提交重画…」放在操作按钮下方（order 4），参数面板之后是底部说明。
         // 之前这行没写 order，flex 默认 0，被排到了整列的最前面 —— 和顶部说明挤在一起。
@@ -2168,11 +2169,18 @@ function versionsOf(jobId) {
             },
           }) : null,
         ),
+        // 底部操作说明：限宽居中，左右留 28px 不贴屏边；行高放宽，短语之间统一用「 · 」分隔，
+        // 这样换行时断点落在分隔符上，不会出现半截词被拆开的样子。
         React.createElement('div', {
-          style: { flex: '0 0 auto', order: 6, color: '#8b95a5', fontSize: '12px', textAlign: 'center', padding: '6px 12px 14px' },
+          style: {
+            flex: '0 0 auto', order: 6, boxSizing: 'border-box',
+            maxWidth: '420px', margin: '0 auto',
+            padding: '8px 28px 16px',
+            color: '#77808f', fontSize: '12px', lineHeight: '1.75', textAlign: 'center',
+          },
         }, total > 1
-          ? '点图片两侧切换　·　双指放大，放大后拖动，轻点复原　·　点空白处关闭'
-          : '双指放大，放大后拖动，轻点复原　·　点空白处关闭'),
+          ? '点图片两侧切换 · 双指放大 · 放大后拖动 · 轻点复原 · 点空白处关闭'
+          : '双指放大 · 放大后拖动 · 轻点复原 · 点空白处关闭'),
       )
     }
 
