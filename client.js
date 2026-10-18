@@ -1307,12 +1307,16 @@ function versionsOf(jobId) {
     /**
      * 在 DSH 内部的全屏浮层里看某张图（不开浏览器标签）。
      */
-    async function viewImage(jobId, title) {
+    async function viewImage(jobId, title, opts) {
       try {
         if (!jobId) return
         if (typeof openImageOverlay !== 'function') return
         const id = String(jobId)
         const label = String(title || '插图')
+        // 这一张挂在哪个媒体项上、属于哪一局 —— 关闭查看器时要把「最后看的那张」
+        // 写回这个媒体项，正文才会跟着变。
+        const mediaId = String((opts && opts.mediaId) || '')
+        const gameId = String((opts && opts.gameId) || '')
         // 这张图自己的重画版本链（独立于整场翻页）
         const chain = versionsOf(id)
 
@@ -1368,6 +1372,8 @@ function versionsOf(jobId) {
           note: label
             + (list.length > 1 ? '　第 ' + (at + 1) + ' / ' + list.length + ' 张' : '')
             + (chain.length > 1 ? '　（这张有 ' + chain.length + ' 个重画版本）' : ''),
+          mediaId,
+          gameId,
         })
       } catch { /* 看图失败不影响正文 */ }
     }
@@ -1719,19 +1725,56 @@ function versionsOf(jobId) {
       )
     }
 
+    // 查看器里那排操作按钮统一样式
+    const actionBtnStyle = (disabled) => ({
+      padding: '7px 14px', fontSize: '13px', borderRadius: '8px',
+      border: '1px solid rgba(160,180,210,.5)', background: 'rgba(255,255,255,.06)',
+      color: disabled ? '#7d8899' : '#dbe3ee', cursor: disabled ? 'default' : 'pointer',
+      opacity: disabled ? 0.6 : 1, whiteSpace: 'nowrap',
+    })
+    // 参数面板里的一行（label + 值，值可选中复制）
+    const detailRow = (label, value) => React.createElement('div', { key: label, style: { display: 'flex', gap: '8px', alignItems: 'baseline' } },
+      React.createElement('span', { style: { flex: '0 0 76px', color: '#8b95a5' } }, label),
+      React.createElement('span', { style: { flex: '1 1 auto', wordBreak: 'break-all', color: '#dbe3ee' } }, String(value ?? '') || '—'),
+    )
+    // 参数面板里的长文本块（提示词）
+    const detailBlock = (label, text) => React.createElement('div', { key: label, style: { marginTop: '8px' } },
+      React.createElement('div', { style: { color: '#8b95a5', marginBottom: '3px' } }, label),
+      React.createElement('div', {
+        style: { maxHeight: '14vh', overflowY: 'auto', padding: '8px 10px', background: 'rgba(0,0,0,.35)', borderRadius: '6px', userSelect: 'text', wordBreak: 'break-word', color: '#b9c3d1' },
+      }, String(text ?? '') || '（空）'),
+    )
+
     function ImageOverlay() {
-      const [view, setView] = React.useState({ open: false, jobIds: [], note: '', working: false, index: 0 })
+      const [view, setView] = React.useState({ open: false, jobIds: [], note: '', working: false, index: 0, mediaId: '', gameId: '' })
       const [zoom, setZoom] = React.useState(1)
       const [pos, setPos] = React.useState({ x: 0, y: 0 })
       const [swipeX, setSwipeX] = React.useState(0)      // 跟手的横向位移
       const [dragging, setDragging] = React.useState(false)
       const [imageWarning, setImageWarning] = React.useState('')
+      const [showParams, setShowParams] = React.useState(false)
+      const [detail, setDetail] = React.useState(null)
+      const [actionBusy, setActionBusy] = React.useState('')
+      const [actionNote, setActionNote] = React.useState('')
       // 手势状态机：pinch(双指缩放) / pan(放大后拖动) / swipe(横滑切图) / tap(轻点)
       const gesture = React.useRef(null)
       const areaRef = React.useRef(null)
 
       openImageOverlay = (next) => setView(current => Object.assign({}, current, next && next.open ? Object.assign({ index: 0 }, next) : next))
-      const close = () => openImageOverlay({ open: false, jobIds: [], note: '', working: false, index: 0 })
+      // 关闭时把最后停留的那张写回它所属的媒体项 —— 正文就显示这一张。
+      const applyCurrent = async () => {
+        const mid = String(view.mediaId || '')
+        const job = String(shownIdForApply() || '')
+        if (!mid || !job) return
+        try {
+          const r = await jsonFetch(BASE + '/apply-media-version', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ gameId: String(view.gameId || lastSessionId || ''), mediaId: mid, jobId: job }),
+          })
+          if (r && r.ok && r.changed) reportHost('apply-version', { mediaId: mid.slice(0, 12), jobId: job.slice(0, 8) })
+        } catch { /* 写回失败不影响关闭 */ }
+      }
+      const close = () => { void applyCurrent(); openImageOverlay({ open: false, jobIds: [], note: '', working: false, index: 0, mediaId: '', gameId: '' }) }
 
       const total = view.jobIds.length
       const at = total ? Math.max(0, Math.min(total - 1, Number(view.index) || 0)) : 0
@@ -1943,11 +1986,98 @@ function versionsOf(jobId) {
         ),
         view.working ? React.createElement('div', { style: { color: '#9aa3b2', fontSize: '14px', padding: '30px 0', textAlign: 'center' } }, '规划中，通常十几秒…') : null,
         imageWarning ? React.createElement('div', { role: 'status', style: { color: '#e2b93b', fontSize: '12px', textAlign: 'center', padding: '8px 10px', margin: '0 14px 8px', background: 'rgba(226,185,59,.1)', borderRadius: '8px' } }, imageWarning) : null,
+        // ── 图片操作：再次生图 / 下载 / 查看参数 / 删除 ────────────────────
+        React.createElement('div', {
+          style: { flex: '0 0 auto', display: 'flex', justifyContent: 'center', gap: '8px', padding: '0 14px 10px', position: 'relative', zIndex: 2147483007 },
+          onClick: event => event.stopPropagation(),
+        },
+          React.createElement('button', {
+            type: 'button', disabled: Boolean(actionBusy) || !shownId,
+            onClick: async () => {
+              if (!shownId) return
+              setActionBusy('redraw'); setActionNote('')
+              try {
+                const r = await jsonFetch(BASE + '/media-action', {
+                  method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ operation: 'redraw', gameId: String(view.gameId || lastSessionId || ''), jobId: shownId, mediaId: String(view.mediaId || '') }),
+                }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
+                if (r && r.ok) { setActionNote('已提交重画，出图后自动替换') }
+                else setActionNote('重画失败：' + ((r && r.error) || '未知原因'))
+              } finally { setActionBusy('') }
+            },
+            style: actionBtnStyle(Boolean(actionBusy) || !shownId),
+          }, actionBusy === 'redraw' ? '🎨 提交中…' : '🎨 再次生图'),
+
+          React.createElement('a', {
+            href: shownId ? (BASE + '/jobs?id=' + encodeURIComponent(shownId) + '&image=1') : '#',
+            download: 'illustration-' + String(shownId || '').slice(0, 8) + '.png',
+            onClick: event => { event.stopPropagation(); if (!shownId) event.preventDefault() },
+            style: Object.assign(actionBtnStyle(!shownId), { textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }),
+          }, '⬇ 下载图片'),
+
+          React.createElement('button', {
+            type: 'button', disabled: !shownId,
+            onClick: async () => {
+              if (!shownId) return
+              if (showParams) { setShowParams(false); return }
+              setActionBusy('detail'); setActionNote('')
+              try {
+                const r = await jsonFetch(BASE + '/job-detail?id=' + encodeURIComponent(shownId)).catch(() => null)
+                if (r && r.ok && r.job) { setDetail(r.job); setShowParams(true) }
+                else setActionNote('读不到这张的参数')
+              } finally { setActionBusy('') }
+            },
+            style: actionBtnStyle(!shownId),
+          }, showParams ? '🔼 收起参数' : '📋 查看参数'),
+
+          React.createElement('button', {
+            type: 'button', disabled: Boolean(actionBusy) || !shownId,
+            onClick: async () => {
+              if (!shownId) return
+              if (typeof confirm === 'function' && !confirm('删除这一张？正文、图片管理、本地缓存里的它都会一起删掉。')) return
+              setActionBusy('delete'); setActionNote('')
+              try {
+                const gameId = String(view.gameId || lastSessionId || '')
+                await jsonFetch(BASE + '/media-action', {
+                  method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ operation: 'delete', gameId, jobId: shownId, mediaId: String(view.mediaId || '') }),
+                }).catch(() => null)
+                const d = await jsonFetch(BASE + '/delete-job', {
+                  method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ id: shownId }),
+                }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
+                if (d && d.ok) {
+                  if (typeof showToast === 'function') showToast('已删除这张图片')
+                  openImageOverlay({ open: false, jobIds: [], note: '', working: false, index: 0, mediaId: '', gameId: '' })
+                } else setActionNote('删除失败：' + ((d && d.error) || '未知原因'))
+              } finally { setActionBusy('') }
+            },
+            style: Object.assign(actionBtnStyle(Boolean(actionBusy) || !shownId), { borderColor: 'rgba(242,104,107,.55)', color: '#f2686b' }),
+          }, actionBusy === 'delete' ? '删除中…' : '🗑 删除图片'),
+        ),
+        actionNote ? React.createElement('div', { style: { flex: '0 0 auto', color: '#9aa3b2', fontSize: '12px', textAlign: 'center', padding: '0 14px 8px' } }, actionNote) : null,
+        showParams && detail ? React.createElement('div', {
+          style: {
+            flex: '0 1 auto', maxHeight: '46vh', overflowY: 'auto', margin: '0 14px 10px', padding: '12px 14px',
+            background: 'rgba(20,24,32,.92)', border: '1px solid rgba(160,180,210,.28)', borderRadius: '10px',
+            fontSize: '12px', lineHeight: 1.75, color: '#c8d2e0', position: 'relative', zIndex: 2147483007,
+          },
+          onClick: event => event.stopPropagation(),
+        },
+          detailRow('渠道', (detail.channelName || '') + (detail.backend ? '（' + detail.backend + '）' : '')),
+          detailRow('模型', detail.model || detail.workflowLabel2 || detail.workflowId || '（工作流内固定）'),
+          detailRow('尺寸', detail.size || ''),
+          detailRow('种子', detail.seed === undefined || detail.seed === null ? '' : String(detail.seed)),
+          detailRow('步数 / CFG', (detail.steps === null || detail.steps === undefined ? '—' : String(detail.steps)) + ' / ' + (detail.cfg === null || detail.cfg === undefined ? '—' : String(detail.cfg))),
+          detail.loras && detail.loras.length ? detailRow('LoRA', detail.loras.join('、')) : null,
+          detailBlock('正面提示词', detail.prompt || ''),
+          detailBlock('负面提示词', detail.negative || ''),
+        ) : null,
         // 图片区：横滑切图、双指缩放、放大后拖动
         React.createElement('div', {
           ref: areaRef,
           style: {
-            flex: '1 1 auto', minHeight: 0, position: 'relative', overflow: 'hidden',
+            flex: showParams ? '0 1 auto' : '1 1 auto', minHeight: 0, position: 'relative', overflow: 'hidden',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             // 必须在这里也声明：touch-action 不继承，只写外层的话图片区仍是 auto，
             // 移动端浏览器会先把横滑当成滚动/缩放吃掉，React 的 preventDefault 拦不住。
@@ -1956,13 +2086,31 @@ function versionsOf(jobId) {
           onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd,
           onWheel, onMouseDown, onMouseMove, onMouseUp, onMouseLeave: onMouseUp, onDoubleClick,
         },
+          // 左右点击热区：从屏幕边缘往内滑会被侧边栏截走，所以除了滑动也提供点击。
+          // 只在未放大时挂上，免得挡住放大后的拖动。
+          total > 1 && zoom <= 1 ? React.createElement('button', {
+            type: 'button', title: '上一张', 'aria-label': '上一张',
+            onClick: event => { event.stopPropagation(); go(-1) },
+            style: {
+              position: 'absolute', left: 0, top: 0, bottom: 0, width: '28%',
+              background: 'transparent', border: 'none', cursor: 'pointer', zIndex: 6, padding: 0,
+            },
+          }) : null,
+          total > 1 && zoom <= 1 ? React.createElement('button', {
+            type: 'button', title: '下一张', 'aria-label': '下一张',
+            onClick: event => { event.stopPropagation(); go(1) },
+            style: {
+              position: 'absolute', right: 0, top: 0, bottom: 0, width: '28%',
+              background: 'transparent', border: 'none', cursor: 'pointer', zIndex: 6, padding: 0,
+            },
+          }) : null,
           shownId ? React.createElement('img', {
             key: shownId,
             src: BASE + '/jobs?id=' + encodeURIComponent(shownId) + '&image=1',
             alt: view.note || '插图',
             draggable: false,
             style: {
-              maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto',
+              maxWidth: '100%', maxHeight: showParams ? '34vh' : '100%', width: 'auto', height: 'auto',
               objectFit: 'contain', borderRadius: '10px', background: '#1a1d24',
               cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default',
               userSelect: 'none',
@@ -1974,7 +2122,7 @@ function versionsOf(jobId) {
         React.createElement('div', {
           style: { flex: '0 0 auto', color: '#8b95a5', fontSize: '12px', textAlign: 'center', padding: '8px 12px 14px' },
         }, total > 1
-          ? '左右滑动切换　·　双指放大，放大后拖动，轻点复原　·　点空白处关闭'
+          ? '左右滑动或点图片两侧切换　·　双指放大，放大后拖动，轻点复原　·　点空白处关闭'
           : '双指放大，放大后拖动，轻点复原　·　点空白处关闭'),
       )
     }
