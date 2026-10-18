@@ -260,7 +260,9 @@ let openImageOverlay = null
     // 不能写 width:100%：Tavern 插图容器是 flex 列容器且 align-items:flex-start，子元素宽度由内容决定，
     // 写 100% 会让「我的宽度依赖父容器、父容器又由我决定」形成循环，
     // 浏览器只能按最小内容解析，图会塔缩成缩略图大小（实测设 2000 只显示 95px）。
-    const wrapStyle = { margin: '14px 0', textAlign: 'center' }
+    // position:relative 是给图片右下角那行状态提示做定位基准用的（见 OfficialImage 末尾）。
+    // display:inline-block 让这个容器紧贴图片宽度 —— 若保持块级满宽，右下角会落到图片外面的右侧去。
+    const wrapStyle = { margin: '14px 0', textAlign: 'center', position: 'relative', display: 'inline-block', maxWidth: '100%' }
     const imgStyle = { maxWidth: '100%', borderRadius: '10px', cursor: 'zoom-in', background: '#111' }
     const noteStyle = { display: 'inline-block', padding: '10px 16px', borderRadius: '10px', fontSize: '13px',
       color: '#9aa3b2', border: '1px dashed #465365', background: 'rgba(255,255,255,.02)' }
@@ -775,20 +777,38 @@ let openImageOverlay = null
           onTouchMove: cancelPress,
         }) : placeholder,
         imgError ? h('div', { style: noteStyle }, imgRetry >= 20 ? '图取不到（' + imgError + '）　' : '正在取回…（第 ' + imgRetry + ' 次）', imgRetry >= 20 ? h('button', { type: 'button', onClick: () => { setImgError(''); setImgRetry(0); setImgNonce(x => x + 1) } }, '重新读取') : null) : null,
-        quietStatus ? null : h('div', { style: { ...noteStyle, marginTop: '4px' }, role: 'status', 'aria-live': 'polite' },
-          taskState === 'uncertain' ? (queryUnavailable
-            ? '状态待确认：旧作业没有保存 ComfyUI 任务号，无法查询找回；若 ComfyUI 未收到任务，请从正文末重新生图。'
-            : '状态待确认：任务号 ' + effectiveJobId + (currentPolledJob?.comfyId ? '（ComfyUI ' + String(currentPolledJob.comfyId) + '）' : currentPolledJob?.providerTaskId ? '（平台任务 ' + String(currentPolledJob.providerTaskId) + '）' : '') + '；请到生图平台检查，暂不自动重试。') :
-          taskState === 'cancelled' && cancellationMayContinue ? '已停止本地等待，但平台请求可能已发出并继续生成；请到生图平台检查用量。' + (replacement?.error ? ' ' + String(replacement.error).slice(0, 140) : '') :
-          taskState === 'cancelled' ? '已取消' :
-          (activeReplacement ? '替换任务' + statusLabel + (replacement.error || currentPolledJob?.error ? '：' + String(replacement.error || currentPolledJob.error).slice(0, 100) : '') :
-           item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel)),
-        validMediaContext(mediaContext) && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
-          ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy }, '取消这张图') : null,
-        validMediaContext(mediaContext) && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
-          ? h('button', { type: 'button', onClick: () => mediaAction('retry'), disabled: actionBusy }, '重试这张图') : null,
-        validMediaContext(mediaContext) && !queryUnavailable && (taskState === 'uncertain' || (taskState === 'cancelled' && cancellationMayContinue))
-          ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy }, actionBusy ? '查询中…' : '重新查询状态') : null)
+        // 状态与操作合成图片右下角的一行，不再是图片下方两个独立的框。
+        // 颜色故意与正文文字区分开（琥珀色文字 + 红色取消），一眼能看出是插图的临时状态。
+        quietStatus ? null : h('div', {
+          style: {
+            position: 'absolute', right: '10px', bottom: '10px',
+            display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end',
+            gap: '10px', maxWidth: 'calc(100% - 20px)',
+            padding: '4px 12px', borderRadius: '999px',
+            background: 'rgba(16,19,26,.78)', backdropFilter: 'blur(4px)',
+            color: '#e2b93b', fontSize: '12px', lineHeight: 1.6, textAlign: 'right',
+          },
+          role: 'status', 'aria-live': 'polite',
+          onClick: event => event.stopPropagation(),
+        },
+          h('span', null,
+            taskState === 'uncertain' ? (queryUnavailable
+              ? '状态待确认：旧作业没有保存 ComfyUI 任务号，无法查询找回；若 ComfyUI 未收到任务，请从正文末重新生图。'
+              : '状态待确认：任务号 ' + effectiveJobId + (currentPolledJob?.comfyId ? '（ComfyUI ' + String(currentPolledJob.comfyId) + '）' : currentPolledJob?.providerTaskId ? '（平台任务 ' + String(currentPolledJob.providerTaskId) + '）' : '') + '；请到生图平台检查，暂不自动重试。') :
+            taskState === 'cancelled' && cancellationMayContinue ? '已停止本地等待，但平台请求可能已发出并继续生成；请到生图平台检查用量。' + (replacement?.error ? ' ' + String(replacement.error).slice(0, 140) : '') :
+            taskState === 'cancelled' ? '已取消' :
+            (activeReplacement ? '替换任务' + statusLabel + (replacement.error || currentPolledJob?.error ? '：' + String(replacement.error || currentPolledJob.error).slice(0, 100) : '') :
+             item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel)),
+          validMediaContext(mediaContext) && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
+            ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy,
+                style: { background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
+          validMediaContext(mediaContext) && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
+            ? h('button', { type: 'button', onClick: () => mediaAction('retry'), disabled: actionBusy,
+                style: { background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
+          validMediaContext(mediaContext) && !queryUnavailable && (taskState === 'uncertain' || (taskState === 'cancelled' && cancellationMayContinue))
+            ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
+                style: { background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
+        ))
     }
 
     function validMediaContext(context) {
