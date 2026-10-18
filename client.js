@@ -5330,7 +5330,37 @@ function versionsOf(jobId) {
       )
     }
 
+    /**
+     * 插图标题（Tavern 渲染的 <figcaption>）居中，并收紧它与图片之间的间距。
+     *
+     * 那层 DOM 由 Tavern 的 TavernPluginMediaItem 负责渲染，插件插不进手：
+     *   h("figure", { className: "dsh-tavern-plugin-media dsh-tavern-illustration",
+     *                  "data-owner": item.owner }, body, caption)
+     * caption 是裸 <figcaption>，没有类名，所以只能按 data-owner 认这一家的图，
+     * 用一条样式盖掉默认的左对齐与大间距。
+     */
+    function installMediaCaptionStyle() {
+      try {
+        if (typeof document === 'undefined') return
+        const id = 'dsh-tavern-image-caption-style'
+        if (document.getElementById(id)) return
+        const style = document.createElement('style')
+        style.id = id
+        style.textContent = [
+          // owner 认的是 package.json 的 name；两个值都写上，改名后也不会失效。
+          '.dsh-tavern-plugin-media[data-owner="dsh-tavern-comfy"] > figcaption,',
+          '.dsh-tavern-plugin-media[data-owner="dsh-tavern-image"] > figcaption {',
+          '  text-align: center;',
+          '  margin: 2px 0 0;',
+          '  line-height: 1.4;',
+          '}',
+        ].join('\n')
+        document.head.appendChild(style)
+      } catch { /* 样式注入失败不影响其它功能 */ }
+    }
+
     function apply(ctx) {
+      installMediaCaptionStyle()
       // 诊断：证明 apply 被调到，并看清 ctx 上到底有什么
       try {
         let keys = null
