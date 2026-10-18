@@ -523,13 +523,49 @@ let openImageOverlay = null
     }
 
 
+    /**
+     * 「每个正文插图位置当前该显示哪张作业」的本地覆盖表：mediaId → jobId。
+     *
+     * 为什么需要它：查看器里切图后我们会调 /apply-media-version，把媒体项的
+     * data.jobId 与 replacement.jobId 都改过去（后端返回 ok/changed 均为 true）。
+     * 但那改的是 Tavern 侧的数据，Tavern 不会因此重新下发这个媒体项的 props，
+     * 正文用的还是旧的 item —— 表现就是「切了、也关了，正文还是那张旧图」。
+     * 所以这里自己记一份，写回成功后立刻让正文切过去，不必等 Tavern 重拉。
+     */
+    const mediaJobOverride = new Map()
+    const mediaJobListeners = new Set()
+    /** 更新「这一处该显示哪张」并通知所有插图重渲染（jobId 传空则清除覆盖）。 */
+    function setMediaJobOverride(mediaId, jobId) {
+      const mid = String(mediaId || '')
+      if (!mid) return
+      const want = String(jobId || '')
+      const before = String(mediaJobOverride.get(mid) || '')
+      if (want) mediaJobOverride.set(mid, want)
+      else mediaJobOverride.delete(mid)
+      if (before === want) return
+      for (const fn of mediaJobListeners) { try { fn() } catch { /* 单个监听器出错不影响其它 */ } }
+    }
+    /** 订阅覆盖表的变化：OfficialImage 用它保证切图后正文立刻跟着变。 */
+    function useMediaJobOverride() {
+      const [, bump] = React.useState(0)
+      React.useEffect(() => {
+        const fn = () => bump(n => n + 1)
+        mediaJobListeners.add(fn)
+        return () => { mediaJobListeners.delete(fn) }
+      }, [])
+    }
+
     /** 官方接口下的插图（kind = dsh-tavern-image/image）。
      *  item.data 里带着 jobId —— 所以放大、右键看提示词、长按、重画全都照用。
      *  官方内置的 image 类型做不到这些（尺寸和交互由 Tavern 固定，插件插不进手）。 */
     function OfficialImage(props) {
       const { item } = props
       const displayWidth = useImageWidth()
-      const jobId = String(item && item.data && item.data.jobId || '')
+      // 订阅覆盖表：查看器写回后正文要立刻跟着换图
+      useMediaJobOverride()
+      // 本地覆盖优先（见 mediaJobOverride 的说明）
+      const overrideJobId = String(mediaJobOverride.get(String(item && item.id || '')) || '')
+      const jobId = String(overrideJobId || (item && item.data && item.data.jobId) || '')
       const replacement = item && item.data && item.data.replacement && typeof item.data.replacement === 'object' ? item.data.replacement : null
       const activeJobId = String(replacement && replacement.jobId || jobId)
       const mediaContext = {
@@ -1812,6 +1848,9 @@ function versionsOf(jobId) {
             ok: Boolean(r && r.ok), changed: Boolean(r && r.changed),
             error: String((r && r.error) || '').slice(0, 160),
           })
+          // 后端已经改好，但 Tavern 不会因此重新下发这个媒体项的 props —— 正文用的还是旧
+          // item。本地记一份并通知所有插图重渲染，正文才会真的换过来（用户反馈的最后一步）。
+          if (r && r.ok && r.changed) setMediaJobOverride(mid, job)
         } catch (error) {
           reportHost('apply-version-threw', {
             mediaId: mid.slice(0, 12), jobId: job.slice(0, 8),
