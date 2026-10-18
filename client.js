@@ -791,6 +791,37 @@ let openImageOverlay = null
       // 没有画面可看时（生成中／失败／已取消／待确认）也要给一块能点的占位：点一下、右键或长按
       // 都能打开提示词编辑器，改完重画。否则这些状态下页面只剩一行文字，用户没有任何出路
       //（失败后点重试、再马上取消，就会掉进这个死角）。
+      //
+      // 「这一处出了新图就自动跟随」：用户没进查看器时，正文应该显示最新生成的那张。
+      // 轻量轮询 /history，找出与当前这张同组（groupId）里最新的已出图作业，比现在新就同步过来。
+      // 用户手动选过也照样跟随 —— 新出的那张就是最新的，这也是用户的明确要求。
+      useEffect(() => {
+        const mediaId = String(item && item.id || '')
+        if (!mediaId) return undefined
+        let live = true
+        const tick = async () => {
+          const cur = mediaJobOverride.get(mediaId)
+          const baseId = String((cur && cur.jobId) || '') || jobId
+          if (!baseId) return
+          try {
+            const r = await jsonFetch(BASE + '/history')
+            if (!live) return
+            const rows = (r && Array.isArray(r.jobs)) ? r.jobs : []
+            const self = rows.find(one => String(one && one.id) === baseId)
+            const group = String((self && self.groupId) || '')
+            if (!group) return
+            const mine = rows.filter(one => one && one.byteLength && String(one.groupId || '') === group)
+            if (!mine.length) return
+            mine.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+            const latest = String(mine[mine.length - 1].id || '')
+            if (!latest || latest === baseId) return
+            setMediaJobOverride(mediaId, latest)
+          } catch { /* 轮询失败不影响显示 */ }
+        }
+        const timer = setInterval(tick, 2500)
+        tick()
+        return () => { live = false; clearInterval(timer) }
+      }, [item && item.id, jobId])
       const showImage = Boolean(src) && (!imgError || imgRetry < 20)
       const placeholderText = taskState === 'failed' ? '配图失败 · 点这里改提示词重画'
         : taskState === 'cancelled' ? '这张图已取消 · 点这里改提示词重画'
