@@ -758,12 +758,17 @@ let openImageOverlay = null
       }, [overrideJobId, activeJobId, jobId, effectiveJobId, recoveredReady, src])
       const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (replacement && replacement.state === 'uncertain' && !recoveredReady))
       const isCancelled = !recoveredReady && (Boolean(item && item.data && item.data.cancelled === true) || Boolean(currentPolledJob && currentPolledJob.state === 'cancelled') || Boolean(replacement && replacement.state === 'cancelled'))
-      // taskState 的取值顺序很关键。媒体项自己还在排队（item.status === 'pending'）时以它为准：
-      // replacement 可能是上一次替换留下的陈旧记录（state 已经是 ready），它排在前面会把
-      // 「正在生成」一路压成「已完成」，于是右下角那行提示根本不出现（用户反馈「生图的提示没有了」）。
-      const taskState = recoveredReady ? 'done' : isUncertain ? 'uncertain' : isCancelled ? 'cancelled' : String(
+      // taskState 的取值顺序很关键，这里已经排错两次：
+      // ① replacement 是上一次替换留下的陈旧记录（state 早已是 ready），它若排在 item.status
+      //    前面，会把「正在生成」压成「已完成」；
+      // ② recoveredReady 说的是「轮询的那张作业完成了」，而轮询目标是跟着正文显示走的 ——
+      //    用户一边等新图、一边把正文切到某张旧图上（写回会换掉轮询目标），它就变成 true，
+      //    同样把提示压掉。
+      // 所以「媒体项自身还在排队」这个信号的位置要放对：排在 isCancelled / isUncertain 之后
+      //（那两者是用户动作或明确的异常终态，优先级更高），但排在 recoveredReady 之前。
+      const itemPending = Boolean(item && item.status === 'pending')
+      const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : itemPending ? 'pending' : recoveredReady ? 'done' : String(
         currentPolledJob && currentPolledJob.state
-        || (item && item.status === 'pending' ? 'pending' : '')
         || replacement && replacement.state
         || (item && item.status === 'failed' ? 'failed' : '')
         || 'done',
