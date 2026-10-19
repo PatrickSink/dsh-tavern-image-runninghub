@@ -816,9 +816,18 @@ let openImageOverlay = null
       const groupLoaded = groupJobs.length > 0
       const replacementRunning = Boolean(replacement
         && ['pending', 'running', 'queued', 'processing'].includes(String(replacement.state || '')))
-      const groupBusy = groupLoaded
+      // 自己刚提交的作业也算「在跑」。首次点生图时，组的列表还是旧的一份（轮询 2.5 秒一次），
+      // replacement 又是 Tavern 的旧 props、提交后不会刷新 —— 两边都不知道有活，于是退出来
+      // 看不到「生成中」，要等下一次轮询才补上（用户反馈：第一次不行，重复一次才行）。
+      // 这个任务是我们自己提交的，作业号就在手上，不必等轮询。
+      const ownJobId = String(activeActionJobId.current || actionJobId || '')
+      const ownState = ownJobId && currentPolledJob && String(currentPolledJob.id) === ownJobId
+        ? String(currentPolledJob.state || '')
+        : (ownJobId ? 'pending' : '')   // 还没轮询到就先当它还在跑，出终态后会自然落下
+      const ownPending = Boolean(ownJobId) && !['done', 'failed', 'cancelled'].includes(ownState)
+      const groupBusy = ownPending || (groupLoaded
         ? groupJobs.some(one => !['done', 'failed', 'cancelled'].includes(String(one.state || '')))
-        : replacementRunning
+        : replacementRunning)
       // 组里最新的成品 —— 自动刷新就是切到它
       const groupDone = groupJobs
         .filter(one => one.byteLength && String(one.state || '') === 'done')
