@@ -2493,9 +2493,12 @@ function versionsOf(jobId) {
       // 不要一直挂在图片下方（重画完成与否由正文里的图自己说明）。
       React.useEffect(() => {
         if (!actionNote) return undefined
+        // 待确认时不要自动消失：这句话是用户判断的依据，出口按钮也挂在它下面，
+        // 6 秒后一清，用户还没反应过来就什么都看不到了（用户反馈「点了没有出现按钮」）。
+        if (actionUncertain) return undefined
         const timer = setTimeout(() => setActionNote(''), 6000)
         return () => clearTimeout(timer)
-      }, [actionNote])
+      }, [actionNote, actionUncertain])
       // 手势状态机：pinch(双指缩放) / pan(放大后拖动) / swipe(横滑切图) / tap(轻点)
       const gesture = React.useRef(null)
       const areaRef = React.useRef(null)
@@ -2850,7 +2853,12 @@ function versionsOf(jobId) {
         actionNote ? React.createElement('div', { style: { flex: '0 0 auto', order: 4, color: '#9aa3b2', fontSize: '12px', textAlign: 'center', padding: '0 14px 8px' } }, actionNote) : null,
         // 待确认时在那句失败提示下面直接给两个出口（用户要求）。
         // 这里能拿到完整上下文（gameId/mediaId/textVersion/turn），两个动作都能真正执行。
-        actionUncertain ? React.createElement('div', {
+        // 三个来源任一成立就出按钮：
+        //   ① 本次会话里刚被拒（actionUncertain）；
+        //   ② 那句失败提示还在（文本兜底，防止 state 未及时置位）；
+        //   ③ 这一处被「待确认锁」锁着 —— 关掉查看大图再打开时组件 state 会重置，
+        //      只靠 ①② 就又会变回「有提示、没按钮」。锁是模块级的，跨开关存活。
+        (actionUncertain || /重画失败|未确认|待确认/.test(String(actionNote || '')) || isUncertainLocked(String(view.mediaId || ''))) ? React.createElement('div', {
           // order 必须和 actionNote(4) 区分开：同层里两个 order:4 的排列不确定，
           // 被挤到参数面板后面就看不见了（用户反馈「点了生图没有出现按钮」）。
           style: { flex: '0 0 auto', order: 5, display: 'flex', gap: '10px', justifyContent: 'center', alignItems: 'center', padding: '0 16px 10px', boxSizing: 'border-box' },
