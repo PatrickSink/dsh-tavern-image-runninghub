@@ -152,8 +152,19 @@ let openImageOverlay = null
       } catch { /* 报告本身绝不能影响功能 */ }
     }
     // 客户端版本戳：重启 DSH 后可以在 /state 的 clientReports 里确认加载的是哪一版
-    const CLIENT_BUILD = 'client-2026-10-09-multi-provider-graph'
-    reportHost('bundle-evaluated', { at: Date.now(), href: String(location?.href ?? '').slice(0, 120), build: CLIENT_BUILD, features: 'character-picker,batch-select,safe-design-save,single-caption,plugin-update,system-option-colors,readable-panel,multi-provider-channels,workflow-graph' })
+    // 版本戳 + 能力戳。
+    // 之前它是个固定字符串，于是「浏览器到底加载的是哪一版」根本没法确认 ——
+    // 排查「提交后看不到生成中」时白费了好几轮，最后才发现页面跑的是旧代码。
+    // 能力戳按功能追加，用来一眼看出加载的版本到没到某一轮改动。
+    const CLIENT_BUILD = 'client-2026-10-18-submit-note'
+    const CLIENT_CAPS = [
+      'submit-note',        // 提交后登记 submittedJobs，正文立刻显示生成中
+      'submit-note-report', // note-submitted 取证
+      'settled-uncertain',  // 终态含 uncertain
+      'group-busy',         // 提示按组判定
+      'autofollow-newest',  // 新图自动刷新
+    ].join(',')
+    reportHost('bundle-evaluated', { at: Date.now(), href: String(location?.href ?? '').slice(0, 120), build: CLIENT_BUILD, caps: CLIENT_CAPS, features: 'character-picker,batch-select,safe-design-save,single-caption,plugin-update,system-option-colors,readable-panel,multi-provider-channels,workflow-graph' })
 
     try {
       window.addEventListener('error', event => {
@@ -560,6 +571,16 @@ let openImageOverlay = null
     const SETTLED_STATES = ['done', 'ready', 'failed', 'cancelled', 'uncertain']
     const isSettled = state => SETTLED_STATES.includes(String(state || ''))
 
+    // 提交广播：登记作业时通知所有插图立刻重拉一次组状态。
+    // 这是比「自己记住提交过什么」更根本的一条 —— 后端知道这一组到底有没有在跑，
+    // 提交后立刻问一次，就不用等 groupJobs 的 2.5 秒定时器，也不必依赖登记的字段对不对。
+    let submitSeq = 0
+    const submitListeners = new Set()
+    function broadcastSubmit() {
+      submitSeq += 1
+      for (const fn of submitListeners) { try { fn() } catch { /* 单个监听器出错不影响其它 */ } }
+    }
+
     const submittedJobs = new Map()   // mediaId -> { jobId, at }
     function noteSubmittedJob(mediaId, jobId) {
       const mid = String(mediaId || '')
@@ -568,10 +589,12 @@ let openImageOverlay = null
       // 而且只在组里恰好没有别的活时才显形，光看现象极难定位（前面反复栽在这里）。
       if (!mid || !jid) {
         reportHost('note-submitted', { ok: 0, reason: !mid ? 'no-mediaId' : 'no-jobId', mediaId: mid.slice(0, 12), jobId: jid.slice(0, 8) })
+        broadcastSubmit()   // 登记不成也要立刻问后端，不能因此让提示缺席
         return
       }
       submittedJobs.set(mid, { jobId: jid, at: Date.now() })
       reportHost('note-submitted', { ok: 1, mediaId: mid.slice(0, 12), jobId: jid.slice(0, 8) })
+      broadcastSubmit()
     }
     function submittedJobOf(mediaId) {
       const hit = submittedJobs.get(String(mediaId || ''))
@@ -826,6 +849,13 @@ let openImageOverlay = null
       // 也不会再让几套判据互相打架 —— 之前两次「闪一下就消失」都是因为把提示挂在
       // 某一张的状态上（旧 props 不刷新，或重进查看器后跟踪丢失）。
       const [groupJobs, setGroupJobs] = React.useState([])
+      // 订阅「有人提交了作业」：提交那一刻立刻重拉组状态（见 broadcastSubmit 的说明）
+      const [submitSeqState, setSubmitSeqState] = React.useState(0)
+      useEffect(() => {
+        const fn = () => setSubmitSeqState(n => n + 1)
+        submitListeners.add(fn)
+        return () => { submitListeners.delete(fn) }
+      }, [])
       useEffect(() => {
         const mediaId = String(item && item.id || '')
         if (!mediaId) return undefined
@@ -852,7 +882,7 @@ let openImageOverlay = null
         const timer = setInterval(tick, 2500)
         tick()
         return () => { live = false; clearInterval(timer) }
-      }, [item && item.id, jobId])
+      }, [item && item.id, jobId, submitSeqState])
       // 组里还有没出图、也没终结的作业 → 这一处在生成中（与正文显示哪张无关）。
       // 组的作业列表是权威判据：它反映后台的真实状态，不受「宿主重启后内存标记残留」影响
       //（数据里「东翼演武场开场」正是如此：4 个作业全部 done，而标记还挂着 pending，
