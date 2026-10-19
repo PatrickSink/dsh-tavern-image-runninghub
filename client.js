@@ -120,6 +120,9 @@ let openImageOverlay = null
       'note-submitted',
       // 每次单图操作的目标与结果：用来确认「取消到底打到了哪个作业」。
       'media-op',
+      // 操作被守卫拦下的原因：这是「点了按钮完全没反应」的唯一线索，必须留痕。
+      // （上一轮加了上报却忘了加进白名单，于是它被预算裁掉，看起来像什么都没发生。）
+      'media-op-blocked',
       // 状态行组合（低频，仅在变化时上报）：定位「该出现提示却没出现」。
       'status-line',
     ])
@@ -801,10 +804,21 @@ let openImageOverlay = null
         let live = true
         const poll = () => jsonFetch(BASE + '/job-detail?id=' + encodeURIComponent(effectiveJobId), { cache: 'no-store' })
           .then(result => {
-            if (!live || (activeActionJobId.current && activeActionJobId.current !== effectiveJobId) || !result || !result.job) return
-            setPolledJob(result.job)
-            const providerMayStillBeWorking = result.job.requestMayHaveSucceeded === true || (result.job.state === 'cancelled' && (result.job.requestStarted === true || result.job.cancelMayHaveContinued === true))
-            if (String(result.job.id || '') === effectiveJobId && ['done', 'ready', 'failed', 'cancelled'].includes(result.job.state) && !providerMayStillBeWorking) mediaUncertainActions.delete(mediaContext.mediaId)
+            // 解锁判断必须独立在下面那串守卫之前。
+            // 原先它跟「显示用的 activeActionJobId 检查」写在同一个 if 之后：用户一旦又操作过一次
+            // （跟踪目标变了），这行就永远走不到，待确认锁就此永不释放 —— 之后所有按钮静默无反应。
+            // 这是本轮排查出的死锁根源。
+            const job = result && result.job
+            const providerMayStillBeWorking = Boolean(job && (job.requestMayHaveSucceeded === true
+              || (job.state === 'cancelled' && (job.requestStarted === true || job.cancelMayHaveContinued === true))))
+            if (job && String(job.id || '') === effectiveJobId
+              && ['done', 'ready', 'failed', 'cancelled'].includes(job.state)
+              && !providerMayStillBeWorking) {
+              unlockUncertain(mediaContext.mediaId)
+            }
+            if (!live || !job) return
+            if (activeActionJobId.current && activeActionJobId.current !== effectiveJobId) return
+            setPolledJob(job)
           })
           .catch(() => {})
         poll()
@@ -816,14 +830,14 @@ let openImageOverlay = null
       async function mediaAction(operation, extra = {}) {
         const lock = mediaContext.mediaId
         const readOnlyRecovery = operation === 'recover'
-        if (actionBusy || mediaPostLocks.has(lock) || (!readOnlyRecovery && mediaUncertainActions.has(lock)) || !validMediaContext(mediaContext)) {
+        if (actionBusy || mediaPostLocks.has(lock) || (!readOnlyRecovery && isUncertainLocked(lock)) || !validMediaContext(mediaContext)) {
           // 这个早退就是「点了按钮什么也没发生」的来源（忙锁、待确认锁、上下文不完整）。
           // 必须留痕，否则前端看起来毫无反应、后端一条记录都没有，无从判断卡在哪一条。
           reportHost('media-op-blocked', {
             operation,
             reason: actionBusy ? 'busy'
               : mediaPostLocks.has(lock) ? 'lock'
-                : (!readOnlyRecovery && mediaUncertainActions.has(lock)) ? 'uncertain-lock'
+                : (!readOnlyRecovery && isUncertainLocked(lock)) ? 'uncertain-lock'
                   : 'invalid-context',
             valid: validMediaContext(mediaContext) ? 1 : 0,
             busy: Boolean(actionBusy) ? 1 : 0,
@@ -862,8 +876,8 @@ let openImageOverlay = null
           })
           setPolledJob({ ...(polledJob || {}), ...result, id: nextJobId, state: result.state || (operation === 'cancel' ? 'cancelled' : 'pending') })
           const providerMayStillBeWorking = result.requestMayHaveSucceeded === true || (result.state === 'cancelled' && (result.cancelMayHaveContinued === true || result.requestStarted === true))
-          if (result.state === 'uncertain' || providerMayStillBeWorking) mediaUncertainActions.add(lock)
-          else if (readOnlyRecovery && ['ready', 'done', 'failed', 'cancelled'].includes(result.state)) mediaUncertainActions.delete(lock)
+          if (result.state === 'uncertain' || providerMayStillBeWorking) lockUncertain(lock)
+          else if (readOnlyRecovery && ['ready', 'done', 'failed', 'cancelled'].includes(result.state)) unlockUncertain(lock)
           if (typeof showToast === 'function') {
             if (readOnlyRecovery) showToast(({ ready: '已找回这张图', done: '已找回这张图', pending: '已重新查询，任务仍在处理中', running: '已重新查询，任务仍在处理中', failed: '已确认这张图失败', uncertain: '状态仍待确认，请到生图平台检查' })[result.state] || '已重新查询这张图的状态', result.state === 'uncertain' ? 'fail' : 'ok')
             else if (operation !== 'cancel') showToast('已提交这张图的任务', 'ok')
@@ -875,13 +889,13 @@ let openImageOverlay = null
           }
         } catch (error) {
           if (error && error.submissionNotStarted === true) {
-            mediaUncertainActions.delete(lock)
+            unlockUncertain(lock)
             if (typeof showToast === 'function') showToast(String(error.message || '请求未提交'), 'fail')
             setPolledJob({ ...(polledJob || {}), state: 'failed', error: String(error.message || error), id: effectiveJobId })
             return
           }
           // Network errors are ambiguous: never repeat a possibly accepted paid request.
-          if (!readOnlyRecovery) mediaUncertainActions.add(lock)
+          if (!readOnlyRecovery) lockUncertain(lock)
           setPolledJob({ ...(polledJob || {}), state: 'uncertain', error: String(error?.message || error), id: effectiveJobId })
         } finally { mediaPostLocks.delete(lock); setActionBusy(false) }
       }
@@ -935,8 +949,17 @@ let openImageOverlay = null
           if (isSettled(mine.state)) return false
           return !groupJobs.some(one => Number(one.createdAt || 0) > Number(mine.createdAt || 0))
         }
-        // 组列表还没回来时保守按它算（宁可不显示提示，也不要凭空断言「已结束」）
-        if (!groupJobs.length) return true
+        // 组列表还没回来时怎么判？关键在有没有提交时间：
+        //   ① 有 startedAt（新记录都会写）→ 只有刚发生（10 分钟内）的才算「当下」。
+        //      否则一个久远残留（几天前那次取消）会永远挂着提示、每次进正文都冒出来，
+        //      而它本身还会挡住后续操作 —— 这正是用户反复遇到的那个现象。
+        //   ② 没有 startedAt（早期记录）→ 无时间可判，只能保守按「当下」处理。
+        //      宁可偶尔多显示一行提示，也不要漏掉「平台可能仍在计费」这类必须知晓的事。
+        if (!groupJobs.length) {
+          const at = Number((replacement && replacement.startedAt) || 0)
+          if (!at) return true
+          return Date.now() - at < 10 * 60 * 1000
+        }
         return false                        // 它不在这一组的作业列表里 → 旧记录
       })()
       const currentReplacement = replacementIsCurrent ? replacement : null
@@ -1298,7 +1321,22 @@ let openImageOverlay = null
       return Boolean(context && context.gameId && context.mediaId && context.jobId && context.textVersion && Number.isFinite(Number(context.turn)))
     }
     const mediaPostLocks = new Set()
-    const mediaUncertainActions = new Set()
+    // 待确认锁：媒体项 id -> 上锁时刻。用 Map 而不是 Set，是为了能兜底过期。
+    // 这是纯内存锁，一旦因为任何原因没被解开，表现就是「点了按钮完全没反应」——
+    // 守卫会静默早退，用户看不到任何反馈，日志里也什么都没有。给一个过期时间，
+    // 最坏情况能自愈，不必让用户刷新页面。这类静默死锁已经反复出现过。
+    const mediaUncertainActions = new Map()
+    const UNCERTAIN_LOCK_MS = 10 * 60 * 1000
+    function lockUncertain(mediaId) { const k = String(mediaId || ''); if (k) mediaUncertainActions.set(k, Date.now()) }
+    function unlockUncertain(mediaId) { const k = String(mediaId || ''); if (k) mediaUncertainActions.delete(k) }
+    function isUncertainLocked(mediaId) {
+      const k = String(mediaId || '')
+      if (!k) return false
+      const at = mediaUncertainActions.get(k)
+      if (!at) return false
+      if (Date.now() - at > UNCERTAIN_LOCK_MS) { mediaUncertainActions.delete(k); return false }
+      return true
+    }
 
     /** 段落：只渲染正文，不再带「画这段」按钮（生图入口统一在消息下方）。 */
     function Segment(props) {
@@ -1697,7 +1735,21 @@ function versionsOf(jobId) {
 
       async function redraw() {
         const lock = String(view.mediaContext && view.mediaContext.mediaId || '')
-        if (view.mediaContext && (mediaPostLocks.has(lock) || mediaUncertainActions.has(lock) || !validMediaContext(view.mediaContext))) return
+        if (view.mediaContext && (mediaPostLocks.has(lock) || isUncertainLocked(lock) || !validMediaContext(view.mediaContext))) {
+          // 这里以前是静默 return —— 用户点重绘什么都不发生，也没有任何解释。
+          // 这是查看器里「点了没反应」的唯一来源，必须给反馈并留痕。
+          const uncertainLocked = isUncertainLocked(lock)
+          reportHost('media-op-blocked', {
+            operation: 'viewer-redraw',
+            reason: mediaPostLocks.has(lock) ? 'lock' : uncertainLocked ? 'uncertain-lock' : 'invalid-context',
+            valid: validMediaContext(view.mediaContext) ? 1 : 0,
+            busy: 0,
+          })
+          say(uncertainLocked
+            ? '这张图上一次请求结果未确认，为避免重复扣费暂不重发；请先点「重新查询状态」确认结果。'
+            : !validMediaContext(view.mediaContext) ? '当前图片上下文不完整，无法提交重画' : '这张图正在处理中，请稍候')
+          return
+        }
         if (view.mediaContext) mediaPostLocks.add(lock)
         openPromptEditor({ busy: 'redraw', note: '正在重画…' })
         try {
@@ -1709,7 +1761,7 @@ function versionsOf(jobId) {
               method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
             })
             if (!result?.ok || !result.jobId) { say('重画状态待确认：' + (result?.error || '请检查生图平台，暂不自动重试')); return }
-            mediaUncertainActions.delete(lock)
+            unlockUncertain(lock)
             // 登记本次提交（这条路径走的是 /media-action，不经过 mediaAction 函数，原先漏了登记）
             noteSubmittedJob(view.mediaContext.mediaId, result.jobId)
             openPromptEditor({ busy: '', submitted: true, note: '已提交重画，任务号 ' + String(result.jobId) + '；完成后会替换这张图。' })
@@ -1735,7 +1787,7 @@ function versionsOf(jobId) {
                   openImageOverlay({ open: true, jobIds: chain, versions: chain, versionAt: chain.length - 1, note: '重画完成（下方可对比历史版本）', working: false, index: chain.length - 1 })
                 })()
         } catch (error) {
-          if (view.mediaContext) mediaUncertainActions.add(lock)
+          if (view.mediaContext) lockUncertain(lock)
           openPromptEditor({ uncertain: Boolean(view.mediaContext) })
           say(view.mediaContext ? '状态待确认（来源任务 ' + view.mediaContext.jobId + '）；请求可能已提交，请检查生图平台，暂不自动重试。' : '失败：' + (error?.message ?? error))
         } finally {
@@ -1751,7 +1803,7 @@ function versionsOf(jobId) {
         fontFamily: 'inherit', resize: 'vertical',
       }
       const btn = (label, onClick, primary) => React.createElement('button', {
-        type: 'button', onClick, disabled: Boolean(view.busy || view.submitted || view.uncertain) || Boolean(view.mediaContext && mediaUncertainActions.has(String(view.mediaContext.mediaId || ''))),
+        type: 'button', onClick, disabled: Boolean(view.busy || view.submitted || view.uncertain) || Boolean(view.mediaContext && isUncertainLocked(String(view.mediaContext.mediaId || ''))),
         style: {
           padding: '6px 16px', fontSize: '13px', borderRadius: '9px', cursor: view.busy ? 'default' : 'pointer',
           border: '1px solid ' + (primary ? 'rgba(106,168,255,.6)' : 'rgba(120,140,170,.45)'),
@@ -6250,7 +6302,7 @@ function versionsOf(jobId) {
 
     exports.name = 'dsh-tavern-image'
     exports.inject = ['slots']
-    exports.apply = apply; exports.__test = Object.assign(exports.__test || {}, { OfficialImage, PromptEditor, validMediaContext, createMessageDrawRunner, setToastForTest: fn => { showToast = fn }, hasUncertainMediaAction: mediaId => mediaUncertainActions.has(String(mediaId)) })
+    exports.apply = apply; exports.__test = Object.assign(exports.__test || {}, { OfficialImage, PromptEditor, validMediaContext, createMessageDrawRunner, setToastForTest: fn => { showToast = fn }, hasUncertainMediaAction: mediaId => isUncertainLocked(String(mediaId)) })
     return module.exports
   },
 })
