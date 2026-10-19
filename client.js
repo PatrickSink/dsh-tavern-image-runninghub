@@ -1855,7 +1855,14 @@ function versionsOf(jobId) {
             const result = await jsonFetch(BASE + '/media-action', {
               method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
             })
-            if (!result?.ok || !result.jobId) { say('重画状态待确认：' + (result?.error || '请检查生图平台，暂不自动重试')); return }
+            if (!result?.ok || !result.jobId) {
+              // 后端拒绝（最常见是「上一次请求结果未知，暂不重发」）时必须留下标记，
+              // 否则这里只是弹一句话，正文和这里都不会出现任何可操作按钮 ——
+              // 用户只看到一串文字，然后无路可走（用户反馈）。
+              lockUncertain(lock)
+              openPromptEditor({ busy: '', uncertain: true, note: '重画未提交：' + (result?.error || '请检查生图平台，暂不自动重试') })
+              return
+            }
             unlockUncertain(lock)
             // 登记本次提交（这条路径走的是 /media-action，不经过 mediaAction 函数，原先漏了登记）
             noteSubmittedJob(view.mediaContext.mediaId, result.jobId)
@@ -1866,7 +1873,14 @@ function versionsOf(jobId) {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ jobId: view.jobId, prompt: view.prompt, negative: view.negative }),
           })
-          if (!r?.ok || !r.jobId) { say('重画失败：' + (r?.error || '没拿到新作业')); return }
+          if (!r?.ok || !r.jobId) {
+            // 这条是旧接口 /redraw 的失败分支（打开编辑器时没带 mediaContext 才会走到这里）。
+            // 原来只弹一句话；现在把「这一处待确认」标出来，让按钮有地方可显。
+            const lockId = String(view.mediaContext && view.mediaContext.mediaId || view.mediaId || '')
+            if (lockId) lockUncertain(lockId)
+            openPromptEditor({ busy: '', uncertain: true, note: '重画失败：' + (r?.error || '没拿到新作业') })
+            return
+          }
           redrawnJobs.set(view.jobId, r.jobId)
           // 登记本次提交。注意媒体项 id 要从 view.mediaId 取 —— 查看器的视图里只有 mediaId，
           // 没有 mediaContext（那是提示词编辑器才有的字段）。之前这里读 view.mediaContext.mediaId，
@@ -1902,7 +1916,7 @@ function versionsOf(jobId) {
       // 「重新查询」去平台确认这次请求到底成没成；「直接生图」则认定不再追究，
       // 清掉阻塞标记后立刻提交一次新的重画（费用风险由用户自己承担，按钮语义已写明）。
       async function resolveUncertain() {
-        if (!view.mediaContext) return
+        if (!view.mediaContext) { say('这张图缺少正文上下文，无法查询；请从正文里点这张图再操作。'); return }
         openPromptEditor({ busy: 'recover', note: '正在向平台确认…' })
         try {
           const r = await jsonFetch(BASE + '/media-action', {
@@ -1918,7 +1932,7 @@ function versionsOf(jobId) {
       }
 
       async function dismissThenRedraw() {
-        if (!view.mediaContext) return
+        if (!view.mediaContext) { say('这张图缺少正文上下文，无法重新提交；请从正文里点这张图再操作。'); return }
         openPromptEditor({ busy: 'dismiss', note: '正在清除上次未确认的记录…' })
         try {
           const r = await jsonFetch(BASE + '/media-action', {
@@ -1997,8 +2011,10 @@ function versionsOf(jobId) {
         // 待确认时，在那句失败提示下面直接给出两个按钮。
         // 正文那边已经不显示这些说明和出口了（用户要求只保留「生成中/查询中 + 取消」），
         // 所以必须在这里能一步处理掉，否则又回到「有提示、没入口」的死路。
-        (view.uncertain || (view.mediaContext && isUncertainLocked(String(view.mediaContext.mediaId || ''))))
-          && view.mediaContext
+        // 不再强制要求 view.mediaContext：从历史图库/旧接口打开时它可能是空的，
+        // 但「上一次结果未知」这件事照样要给出出口（否则又是「有提示、没按钮」）。
+        // 真到缺少上下文时，点击会明确告诉用户从正文点这张图再操作。
+        (view.uncertain || isUncertainLocked(String(view.mediaContext && view.mediaContext.mediaId || view.mediaId || '')))
           ? React.createElement('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', marginTop: '10px', flexWrap: 'wrap' } },
               React.createElement('button', {
                 type: 'button', onClick: resolveUncertain, disabled: Boolean(view.busy),
@@ -2469,6 +2485,9 @@ function versionsOf(jobId) {
       const [detail, setDetail] = React.useState(null)
       const [actionBusy, setActionBusy] = React.useState('')
       const [actionNote, setActionNote] = React.useState('')
+      // 生图被后端拒绝时（「上一次请求结果未知，暂不重发」），要在这里给出两个出口。
+      // 以前只写一行文字，用户看到提示却没有任何按钮可点（用户反馈）。
+      const [actionUncertain, setActionUncertain] = React.useState(false)
       const [hot, setHot] = React.useState('')
       // 「已提交重画，出图后自动替换」这类临时提示：显示几秒后自己消失，
       // 不要一直挂在图片下方（重画完成与否由正文里的图自己说明）。
@@ -2766,7 +2785,13 @@ function versionsOf(jobId) {
                   noteSubmittedJob(String(view.mediaId || ''), String(r.jobId || shownId))
                   setActionNote('已提交重画，出图后自动替换')
                 }
-                else setActionNote('重画失败：' + ((r && r.error) || '未知原因'))
+                else {
+                  // 后端拒绝：把「这一处待确认」标出来，下面会据此显示两个出口按钮。
+                  const lockId = String(view.mediaId || '')
+                  if (lockId) lockUncertain(lockId)
+                  setActionUncertain(true)
+                  setActionNote('重画失败：' + ((r && r.error) || '未知原因'))
+                }
               } finally { setActionBusy('') }
             },
             style: actionBtnStyle(Boolean(actionBusy) || !shownId),
@@ -2821,6 +2846,61 @@ function versionsOf(jobId) {
         // 「已提交重画…」放在操作按钮下方（order 4），参数面板之后是底部说明。
         // 之前这行没写 order，flex 默认 0，被排到了整列的最前面 —— 和顶部说明挤在一起。
         actionNote ? React.createElement('div', { style: { flex: '0 0 auto', order: 4, color: '#9aa3b2', fontSize: '12px', textAlign: 'center', padding: '0 14px 8px' } }, actionNote) : null,
+        // 待确认时在那句失败提示下面直接给两个出口（用户要求）。
+        // 这里能拿到完整上下文（gameId/mediaId/textVersion/turn），两个动作都能真正执行。
+        actionUncertain ? React.createElement('div', {
+          style: { flex: '0 0 auto', order: 4, display: 'flex', gap: '10px', justifyContent: 'center', alignItems: 'center', padding: '0 16px 10px', boxSizing: 'border-box' },
+        },
+          React.createElement('button', {
+            type: 'button', disabled: Boolean(actionBusy),
+            onClick: async () => {
+              const ctx = { gameId: String(view.gameId || lastSessionId || ''), mediaId: String(view.mediaId || ''), jobId: String(shownId || ''), textVersion: String(view.textVersion || ''), turn: view.turn }
+              if (!ctx.gameId || !ctx.mediaId) { setActionNote('缺少图片上下文，无法查询'); return }
+              setActionBusy('recover'); setActionNote('')
+              try {
+                const r = await jsonFetch(BASE + '/media-action', {
+                  method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ operation: 'recover', ...ctx }),
+                }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
+                if (!r || !r.ok) { setActionNote('查询未成功：' + ((r && r.error) || '未确认')); return }
+                unlockUncertain(ctx.mediaId)
+                setActionUncertain(false)
+                const map = { done: '已找回这张图，出图后自动替换', ready: '已找回这张图，出图后自动替换', pending: '任务仍在处理中', running: '任务仍在处理中', failed: '已确认失败', cancelled: '已确认已取消', uncertain: '状态仍待确认，可点「直接生图」继续' }
+                setActionNote(map[String(r.state || '')] || ('已重新查询：' + String(r.state || '')))
+              } finally { setActionBusy('') }
+            },
+            style: { padding: '6px 16px', fontSize: '13px', borderRadius: '9px', cursor: actionBusy ? 'default' : 'pointer', border: '1px solid rgba(120,140,170,.45)', background: 'transparent', color: '#dbe3ee' },
+          }, actionBusy === 'recover' ? '🔄 查询中…' : '🔄 重新查询'),
+          React.createElement('button', {
+            type: 'button', disabled: Boolean(actionBusy),
+            onClick: async () => {
+              const ctx = { gameId: String(view.gameId || lastSessionId || ''), mediaId: String(view.mediaId || ''), jobId: String(shownId || ''), textVersion: String(view.textVersion || ''), turn: view.turn }
+              if (!ctx.gameId || !ctx.mediaId) { setActionNote('缺少图片上下文，无法重新提交'); return }
+              setActionBusy('dismiss'); setActionNote('')
+              try {
+                const r = await jsonFetch(BASE + '/media-action', {
+                  method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ operation: 'dismiss', ...ctx }),
+                }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
+                if (!r || !r.ok) { setActionNote('未能清除：' + ((r && r.error) || '未确认')); return }
+                unlockUncertain(ctx.mediaId)
+                setActionUncertain(false)
+              } finally { setActionBusy('') }
+              setActionBusy('redraw'); setActionNote('')
+              try {
+                const again = await jsonFetch(BASE + '/media-action', {
+                  method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ operation: 'redraw', ...ctx }),
+                }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
+                if (again && again.ok) {
+                  noteSubmittedJob(ctx.mediaId, String(again.jobId || ctx.jobId))
+                  setActionNote('已提交重画，出图后自动替换')
+                } else setActionNote('重画失败：' + ((again && again.error) || '未知原因'))
+              } finally { setActionBusy('') }
+            },
+            style: { padding: '6px 16px', fontSize: '13px', borderRadius: '9px', cursor: actionBusy ? 'default' : 'pointer', border: '1px solid rgba(106,168,255,.6)', background: 'rgba(106,168,255,.18)', color: '#dbe3ee' },
+          }, actionBusy === 'dismiss' ? '🎨 清除中…' : '🎨 直接生图'),
+        ) : null,
         showParams && detail ? React.createElement('div', {
           style: {
             flex: '0 1 auto', order: 5, maxHeight: '46vh', overflowY: 'auto', margin: '0 14px 10px', padding: '12px 14px',
