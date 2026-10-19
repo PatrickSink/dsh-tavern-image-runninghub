@@ -539,15 +539,18 @@ let openImageOverlay = null
     const mediaJobOverride = new Map()
     const mediaJobListeners = new Set()
     /** 更新「这一处该显示哪张」并通知所有插图重渲染（jobId 传空则清除覆盖）。 */
-    function setMediaJobOverride(mediaId, jobId) {
+    function setMediaJobOverride(mediaId, jobId, opts) {
       const mid = String(mediaId || '')
       if (!mid) return
       const want = String(jobId || '')
       const prev = mediaJobOverride.get(mid)
       const before = String((prev && prev.jobId) || '')
-      // 记 { jobId, at }：at 用作取图的防缓存参数。覆盖之后必须让浏览器重新拉图，
-      // 否则同一 URL 会命中旧图（Tavern 那边的 attachment 虽然换了，前端仍在用旧地址）。
-      if (want) mediaJobOverride.set(mid, { jobId: want, at: Date.now() })
+      // 记 { jobId, at, manual }：
+      // at 用作取图的防缓存参数（覆盖后必须让浏览器重新拉图，否则同一 URL 命中旧图）；
+      // manual 标明这是用户手动选的 —— 自动跟随「最新」时必须尊重它，否则用户刚选的图
+      // 会被下一次轮询改回去（用户反馈「切换哪张就显示哪张的功能没了」）。
+      const manual = Boolean(opts && opts.manual) || Boolean(prev && prev.manual && before === want)
+      if (want) mediaJobOverride.set(mid, { jobId: want, at: Date.now(), manual })
       else mediaJobOverride.delete(mid)
       if (before === want) return
       reportHost('media-job-override', { mediaId: mid.slice(0, 12), jobId: want.slice(0, 8), before: before.slice(0, 8), listeners: mediaJobListeners.size })
@@ -770,7 +773,17 @@ let openImageOverlay = null
       //    替换进行中时，媒体项本身可能已经是 ready（原图还在），轮询的那个作业也可能已经
       //    完成 —— recoveredReady 因此为 true，把整块状态压成「已完成」，提示照样不出现。
       //    所以「替换任务进行中」也必须在 recoveredReady 之前。
-      const replacementActive = Boolean(replacement && ['pending', 'running', 'queued', 'processing'].includes(String(replacement.state || '')))
+      //
+      //    但那个标记本身不可靠：它靠 media-actions 在轮询到终态时回写，一旦那条路径没跑到，
+      //    state 就永远停在 pending（数据里就有两处：作业早已 done，标记还是 pending，
+      //    结果提示再也不消失）。所以还要看它指向的作业是否已完成 ——
+      //    完成时 data.jobId 会指向它，于是两者相同即可判定这一轮替换已经落地。
+      const replacementJobId = String((replacement && replacement.jobId) || '')
+      const replacementLanded = Boolean(replacementJobId)
+        && String((item && item.data && item.data.jobId) || '') === replacementJobId
+      const replacementActive = Boolean(replacement
+        && ['pending', 'running', 'queued', 'processing'].includes(String(replacement.state || '')))
+        && !replacementLanded
       const itemPending = Boolean(item && item.status === 'pending')
       const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : replacementActive ? String(replacement.state) : itemPending ? 'pending' : recoveredReady ? 'done' : String(
         currentPolledJob && currentPolledJob.state
@@ -813,8 +826,13 @@ let openImageOverlay = null
             const mine = rows.filter(one => one && one.byteLength && String(one.groupId || '') === group)
             if (!mine.length) return
             mine.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
-            const latest = String(mine[mine.length - 1].id || '')
+            const newest = mine[mine.length - 1]
+            const latest = String(newest && newest.id || '')
             if (!latest || latest === baseId) return
+            // 用户手动选过就尊重他：只有在他选完之后又生成了更新的图，才跟随过去。
+            // （否则 2.5 秒一次的轮询会把他刚选的那张立刻改回最新 —— 那就是「切换哪张
+            // 就显示哪张」失效的原因。）
+            if (cur && cur.manual && Number(newest.createdAt || 0) <= Number(cur.at || 0)) return
             setMediaJobOverride(mediaId, latest)
           } catch { /* 轮询失败不影响显示 */ }
         }
@@ -1928,8 +1946,9 @@ function versionsOf(jobId) {
             error: String((r && r.error) || '').slice(0, 160),
           })
           // 后端已经改好，但 Tavern 不会因此重新下发这个媒体项的 props —— 正文用的还是旧
-          // item。本地记一份并通知所有插图重渲染，正文才会真的换过来（用户反馈的最后一步）。
-          if (r && r.ok && r.changed) setMediaJobOverride(mid, job)
+          // item。本地记一份并通知所有插图重渲染，正文才会真的换过来。
+          // manual: true —— 这是用户自己选的，自动跟随不能把它改回去。
+          if (r && r.ok && r.changed) setMediaJobOverride(mid, job, { manual: true })
         } catch (error) {
           reportHost('apply-version-threw', {
             mediaId: mid.slice(0, 12), jobId: job.slice(0, 8),
