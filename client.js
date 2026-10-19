@@ -118,6 +118,8 @@ let openImageOverlay = null
       'media-job-override',
       // 提交登记是否成功：断了就会出现「提交成功但正文看不到生成中」，必须能看到。
       'note-submitted',
+      // 每次单图操作的目标与结果：用来确认「取消到底打到了哪个作业」。
+      'media-op',
       // 状态行组合（低频，仅在变化时上报）：定位「该出现提示却没出现」。
       'status-line',
     ])
@@ -824,10 +826,24 @@ let openImageOverlay = null
           })
           if (!result?.ok) throw new Error(result?.error || '请求未确认')
           const nextJobId = String(result.jobId || effectiveJobId)
-          activeActionJobId.current = nextJobId
-          setActionJobId(nextJobId)
-          // 登记「我提交了这个作业」：正文靠它立刻显示生成中，不必等 /history 轮询
-          noteSubmittedJob(mediaContext.mediaId, nextJobId)
+          // 只有真正「提交新任务」的操作才更新「本次提交的作业」。
+          // cancel / recover 返回的 jobId 是「被操作的那个作业」—— 若把那也记进来，
+          // 登记就被污染了：下一次取消会打到这个早已结束的旧作业上，后端回
+          // 「这张图已完成，未取消」，而真正在跑的那张没人管
+          //（用户反馈的「先是报 pending，然后说是已完成」就是这个）。
+          const isSubmit = operation === 'redraw' || operation === 'retry'
+          // recover 也要更新 actionJobId —— 它得把正文显示切到「找回来的那张」；
+          // 但它不是提交，所以不进登记表。cancel 两样都不做：
+          // 取消后继续显示这一处原来的作业，跟踪目标不该被改成「被取消的那个」。
+          if (isSubmit || operation === 'recover') {
+            activeActionJobId.current = nextJobId
+            setActionJobId(nextJobId)
+          }
+          if (isSubmit) noteSubmittedJob(mediaContext.mediaId, nextJobId)
+          reportHost('media-op', {
+            operation, target: String(effectiveJobId).slice(0, 8), returned: nextJobId.slice(0, 8),
+            state: String(result.state || ''), recorded: isSubmit ? 1 : 0,
+          })
           setPolledJob({ ...(polledJob || {}), ...result, id: nextJobId, state: result.state || (operation === 'cancel' ? 'cancelled' : 'pending') })
           const providerMayStillBeWorking = result.requestMayHaveSucceeded === true || (result.state === 'cancelled' && (result.cancelMayHaveContinued === true || result.requestStarted === true))
           if (result.state === 'uncertain' || providerMayStillBeWorking) mediaUncertainActions.add(lock)
