@@ -728,7 +728,62 @@ let openImageOverlay = null
       const activeActionJobId = React.useRef('')
 
       useEffect(() => { activeActionJobId.current = ''; setPolledJob(null); setActionJobId('') }, [item && item.id])
-      const effectiveJobId = String(actionJobId || activeJobId)
+      const [groupJobs, setGroupJobs] = React.useState([])
+      // 订阅「有人提交了作业」：提交那一刻立刻重拉组状态（见 broadcastSubmit 的说明）
+      const [submitSeqState, setSubmitSeqState] = React.useState(0)
+      useEffect(() => {
+        const fn = () => setSubmitSeqState(n => n + 1)
+        submitListeners.add(fn)
+        return () => { submitListeners.delete(fn) }
+      }, [])
+      useEffect(() => {
+        const mediaId = String(item && item.id || '')
+        if (!mediaId) return undefined
+        let live = true
+        const tick = async () => {
+          const cur = mediaJobOverride.get(mediaId)
+          const baseId = String((cur && cur.jobId) || '') || jobId
+          if (!baseId) return
+          try {
+            const first = await jsonFetch(BASE + '/history')
+            if (!live) return
+            const rows = (first && Array.isArray(first.jobs)) ? first.jobs : []
+            const self = rows.find(one => String(one && one.id) === baseId)
+            const group = String((self && self.groupId) || '')
+            let mine = []
+            if (group) {
+              const exact = await jsonFetch(BASE + '/history?groupId=' + encodeURIComponent(group))
+              if (!live) return
+              mine = (exact && Array.isArray(exact.jobs)) ? exact.jobs : []
+            }
+            setGroupJobs(mine.filter(one => one && one.id))
+          } catch { /* 轮询失败就保留上一次的数据 */ }
+        }
+        const timer = setInterval(tick, 2500)
+        tick()
+        return () => { live = false; clearInterval(timer) }
+      }, [item && item.id, jobId, submitSeqState])
+      // 取消 / 重试针对的是「**这一组里最新提交的那个作业**」，而**不是**「当前显示的那张」。
+      // 后者往往是旧的、早已出图的图：一点取消，后端查到它是 done，就回
+      // 「这张图已完成，未取消」，而真正在跑的任务没人管（用户反馈）。
+      //
+      // 注意必须限定在同一组内：一个正文位置对应一个组，取消只能取消这一处的任务。
+      // groupJobs 就是按本处 groupId 拉回来的作业列表，用它取「最新提交」最准，也不会跨组。
+      const groupNewestId = (() => {
+        let best = null
+        for (const one of groupJobs) {
+          if (!best || Number(one.createdAt || 0) > Number(best.createdAt || 0)) best = one
+        }
+        return String((best && best.id) || '')
+      })()
+      // 组列表还没拉回来时（首屏、轮询失败），退回本地登记的本次提交
+      const recentSubmittedId = (() => {
+        const hit = submittedJobs.get(String(item && item.id || ''))
+        if (!hit) return ''
+        if (Date.now() - Number(hit.at || 0) > SUBMITTED_UNKNOWN_MS) return ''
+        return String(hit.jobId || '')
+      })()
+      const effectiveJobId = String(actionJobId || groupNewestId || recentSubmittedId || activeJobId)
 
       // Poll only this media item's active job. GET is safe to retry; paid POSTs below are single-flight.
       useEffect(() => {
@@ -848,41 +903,6 @@ let openImageOverlay = null
       // 后台任务没有推送机制，前端只能靠轮询知道它完了没；但粒度是「组」而非「某一张」，
       // 也不会再让几套判据互相打架 —— 之前两次「闪一下就消失」都是因为把提示挂在
       // 某一张的状态上（旧 props 不刷新，或重进查看器后跟踪丢失）。
-      const [groupJobs, setGroupJobs] = React.useState([])
-      // 订阅「有人提交了作业」：提交那一刻立刻重拉组状态（见 broadcastSubmit 的说明）
-      const [submitSeqState, setSubmitSeqState] = React.useState(0)
-      useEffect(() => {
-        const fn = () => setSubmitSeqState(n => n + 1)
-        submitListeners.add(fn)
-        return () => { submitListeners.delete(fn) }
-      }, [])
-      useEffect(() => {
-        const mediaId = String(item && item.id || '')
-        if (!mediaId) return undefined
-        let live = true
-        const tick = async () => {
-          const cur = mediaJobOverride.get(mediaId)
-          const baseId = String((cur && cur.jobId) || '') || jobId
-          if (!baseId) return
-          try {
-            const first = await jsonFetch(BASE + '/history')
-            if (!live) return
-            const rows = (first && Array.isArray(first.jobs)) ? first.jobs : []
-            const self = rows.find(one => String(one && one.id) === baseId)
-            const group = String((self && self.groupId) || '')
-            let mine = []
-            if (group) {
-              const exact = await jsonFetch(BASE + '/history?groupId=' + encodeURIComponent(group))
-              if (!live) return
-              mine = (exact && Array.isArray(exact.jobs)) ? exact.jobs : []
-            }
-            setGroupJobs(mine.filter(one => one && one.id))
-          } catch { /* 轮询失败就保留上一次的数据 */ }
-        }
-        const timer = setInterval(tick, 2500)
-        tick()
-        return () => { live = false; clearInterval(timer) }
-      }, [item && item.id, jobId, submitSeqState])
       // 组里还有没出图、也没终结的作业 → 这一处在生成中（与正文显示哪张无关）。
       // 组的作业列表是权威判据：它反映后台的真实状态，不受「宿主重启后内存标记残留」影响
       //（数据里「东翼演武场开场」正是如此：4 个作业全部 done，而标记还挂着 pending，
