@@ -807,8 +807,18 @@ let openImageOverlay = null
         tick()
         return () => { live = false; clearInterval(timer) }
       }, [item && item.id, jobId])
-      // 组里还有没出图、也没终结的作业 → 这一处在生成中（与正文显示哪张无关）
-      const groupBusy = groupJobs.some(one => !['done', 'failed', 'cancelled'].includes(String(one.state || '')))
+      // 组里还有没出图、也没终结的作业 → 这一处在生成中（与正文显示哪张无关）。
+      // 组的作业列表是权威判据：它反映后台的真实状态，不受「宿主重启后内存标记残留」影响
+      //（数据里「东翼演武场开场」正是如此：4 个作业全部 done，而标记还挂着 pending，
+      //  若用标记就会永远显示「排队中」）。
+      // 但列表拉回来之前（首屏、或轮询失败）必须有兜底，否则提示和「取消这张图」都不出现，
+      // 用户就没有取消的入口了 —— 那时先用媒体项自己的 replacement 标记顶上。
+      const groupLoaded = groupJobs.length > 0
+      const replacementRunning = Boolean(replacement
+        && ['pending', 'running', 'queued', 'processing'].includes(String(replacement.state || '')))
+      const groupBusy = groupLoaded
+        ? groupJobs.some(one => !['done', 'failed', 'cancelled'].includes(String(one.state || '')))
+        : replacementRunning
       // 组里最新的成品 —— 自动刷新就是切到它
       const groupDone = groupJobs
         .filter(one => one.byteLength && String(one.state || '') === 'done')
@@ -817,9 +827,12 @@ let openImageOverlay = null
       // 提示只看「这一组还有没有在跑」，不再依赖本次会话跟踪了哪个任务
       const replacementActive = groupBusy
       const itemPending = Boolean(item && item.status === 'pending')
-      const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : replacementActive ? String(replacement.state) : itemPending ? 'pending' : recoveredReady ? 'done' : String(
+      // 兜底里不能再读 replacement.state —— 那是 media-actions 的内存标记，宿主重启后
+      // 可能永远停在 pending（数据里「东翼演武场开场」正是如此：4 个作业全部 done，
+      // 标记还挂着 pending），于是标签成了「排队中」，把组级的判断整个架空。
+      // 组里到底还有没有活在跑，只由 groupBusy 说话。
+      const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : groupBusy ? 'running' : itemPending ? 'pending' : recoveredReady ? 'done' : String(
         currentPolledJob && currentPolledJob.state
-        || replacement && replacement.state
         || (item && item.status === 'failed' ? 'failed' : '')
         || 'done',
       )
@@ -834,17 +847,20 @@ let openImageOverlay = null
       // ② 不能带 !activeReplacement —— 替换记录在出图完成后依然存在，带上它同样会赖着不走。
       const quietStatus = ['done', 'ready'].includes(taskState) && !(item && item.status === 'failed')
       // 低频取证：只在状态组合变化时上报一次（不是每次渲染），用来定位
-      // 「该出现提示却没出现」这类问题。稳定后可以删。
-      const statusSig = [taskState, itemPending ? 1 : 0, replacementActive ? 1 : 0, quietStatus ? 1 : 0, String(item && item.status || '')].join('|')
+      // 「该出现提示却没出现」「新图没自动刷新」这类问题。稳定后可以删。
+      const statusSig = [taskState, groupLoaded ? 1 : 0, groupJobs.length, groupBusy ? 1 : 0, newestDoneId.slice(0, 8), String(item && item.status || '')].join('|')
       useEffect(() => {
+        const mid = String(item && item.id || '')
+        const cur = mediaJobOverride.get(mid)
         reportHost('status-line', {
-          mediaId: String(item && item.id || '').slice(0, 14),
+          mediaId: mid.slice(0, 14),
           taskState,
-          itemPending: itemPending ? 1 : 0,
-          replacementActive: replacementActive ? 1 : 0,
-          repState: String((replacement && replacement.state) || ''),
+          groupCount: groupJobs.length,
+          groupBusy: groupBusy ? 1 : 0,
+          newestDone: newestDoneId.slice(0, 8),
+          shown: String((cur && cur.jobId) || '').slice(0, 8),
+          manual: cur && cur.manual ? 1 : 0,
           itemStatus: String(item && item.status || ''),
-          quiet: quietStatus ? 1 : 0,
         })
       }, [statusSig])
       // 没有画面可看时（生成中／失败／已取消／待确认）也要给一块能点的占位：点一下、右键或长按
@@ -956,8 +972,10 @@ let openImageOverlay = null
               : '状态待确认：任务号 ' + effectiveJobId + (currentPolledJob?.comfyId ? '（ComfyUI ' + String(currentPolledJob.comfyId) + '）' : currentPolledJob?.providerTaskId ? '（平台任务 ' + String(currentPolledJob.providerTaskId) + '）' : '') + '；请到生图平台检查，暂不自动重试。') :
             taskState === 'cancelled' && cancellationMayContinue ? '已停止本地等待，但平台请求可能已发出并继续生成；请到生图平台检查用量。' + (replacement?.error ? ' ' + String(replacement.error).slice(0, 140) : '') :
             taskState === 'cancelled' ? '已取消' :
-            (activeReplacement ? '替换任务' + statusLabel + (replacement.error || currentPolledJob?.error ? '：' + String(replacement.error || currentPolledJob.error).slice(0, 100) : '') :
-             item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel)),
+            // 不再区分「替换任务」与别的来源 —— 提示是「这一组还有没有活在跑」，
+            // 与这张图是被重绘、重新生图还是初次生成无关。activeReplacement 是旧的单张判据，
+            // 它的 replacement 记录会一直留在数据里，于是每次切换正文都闪一下「替换任务…」。
+            item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel)),
           validMediaContext(mediaContext) && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
             ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy,
                 style: { background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
@@ -967,7 +985,7 @@ let openImageOverlay = null
           validMediaContext(mediaContext) && !queryUnavailable && (taskState === 'uncertain' || (taskState === 'cancelled' && cancellationMayContinue))
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
                 style: { background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
-        ))
+        )
     }
 
     function validMediaContext(context) {

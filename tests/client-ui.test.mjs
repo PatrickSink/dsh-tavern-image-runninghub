@@ -286,14 +286,16 @@ test('画风预设和展开的世界书编辑器使用明确的深色表面与�
   assert.equal(editorArea.props.style.color, '#e8edf5')
 })
 
-test('官方媒体渲染器在上下文无效时禁用单图操作，并保留旧图显示替换状态', () => {
+test('官方媒体渲染器在上下文无效时禁用单图操作，并保留旧图显示生成中状态', () => {
   const ui = harness()
   const old = ui.renderComponent(ui.api.__test.OfficialImage, {
     gameId: 'game-1', turn: 4,
     item: { id: 'media-1', textVersion: 'text-v2', status: 'ready', url: '/old.png', data: { jobId: 'job-old', replacement: { jobId: 'job-new', state: 'running' } } },
   })
   assert.equal(ui.nodes(old).find(node => node.type === 'img').props.src, '/old.png')
-  assert.match(ui.text(old), /替换任务生成中/)
+  // 提示不再按来源区分（用户要求：提示属于「组」这一级，与当前显示哪张、是否重绘无关）。
+  // 从前那句「替换任务生成中」会让同一件事看起来像两处提示。
+  assert.match(ui.text(old), /生成中/)
   assert.equal(ui.nodes(old).filter(node => node.type === 'button' && ui.text(node) === '取消这张图').length, 1)
 
   const invalid = ui.renderComponent(ui.api.__test.OfficialImage, {
