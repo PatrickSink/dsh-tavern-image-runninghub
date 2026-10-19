@@ -1110,14 +1110,24 @@ let openImageOverlay = null
       // 并且按「这条提示的原文」记：内容变了（新一轮任务、新的错误）就该重新出现，
       // 而不是被上一次的关闭动作一并压掉。
       const statusClosedKey = 'dsh-tavern-image-status-closed:' + String(item && item.id || '')
-      const [statusClosedText, setStatusClosedText] = React.useState(() => {
-        try { return String(localStorage.getItem(statusClosedKey) || '') } catch { return '' }
-      })
+      // 注意：绝不在渲染期碰 localStorage。渲染期访问外部存储一旦出问题（隐私模式、
+      // 沙箱 iframe、配额异常），影响面是整棵组件树 —— 而这是正文里反复渲染的组件，
+      // 一旦抛错会让整个游玩页的交互全部失效（用户反馈：进正文后所有按钮失去反应）。
+      // 所以初始值只给空串，真实取值放到 effect 里做，读写都包在 try 里。
+      const [statusClosedText, setStatusClosedText] = React.useState('')
+      useEffect(() => {
+        try {
+          const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(statusClosedKey) : ''
+          setStatusClosedText(String(raw || ''))
+        } catch { /* 读不到就当作没关闭过 */ }
+      }, [statusClosedKey])
       const statusClosed = Boolean(statusFullText) && statusClosedText === statusFullText
       const closeStatusRow = () => {
         setStatusPeek(null)
         setStatusClosedText(String(statusFullText || ''))
-        try { localStorage.setItem(statusClosedKey, String(statusFullText || '')) } catch { /* 存不了就只影响本次 */ }
+        try {
+          if (typeof localStorage !== 'undefined') localStorage.setItem(statusClosedKey, String(statusFullText || ''))
+        } catch { /* 存不了就只影响本次 */ }
       }
       // 点状态行「就近」弹全文
       const [statusPeek, setStatusPeek] = React.useState(null)
