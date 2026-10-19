@@ -819,12 +819,16 @@ let openImageOverlay = null
       // 自己刚提交的作业也算「在跑」。首次点生图时，组的列表还是旧的一份（轮询 2.5 秒一次），
       // replacement 又是 Tavern 的旧 props、提交后不会刷新 —— 两边都不知道有活，于是退出来
       // 看不到「生成中」，要等下一次轮询才补上（用户反馈：第一次不行，重复一次才行）。
-      // 这个任务是我们自己提交的，作业号就在手上，不必等轮询。
+      // 这个任务是我们自己提交的，作业号就在手上：mediaAction 一提交就会 setPolledJob，
+      // 所以 currentPolledJob 立刻就有值，不必等 /history 轮询。
+      // 注意不能给「还没有轮询结果」兜底成 pending —— 只读的「重新查询」也会写下 actionJobId，
+      // 那样已完成的图会被当成还在跑，凭空挂出「取消这张图」（测试先暴露了这一点）。
       const ownJobId = String(activeActionJobId.current || actionJobId || '')
       const ownState = ownJobId && currentPolledJob && String(currentPolledJob.id) === ownJobId
         ? String(currentPolledJob.state || '')
-        : (ownJobId ? 'pending' : '')   // 还没轮询到就先当它还在跑，出终态后会自然落下
-      const ownPending = Boolean(ownJobId) && !['done', 'failed', 'cancelled'].includes(ownState)
+        : ''
+      const ownPending = Boolean(ownJobId) && Boolean(ownState)
+        && !['done', 'failed', 'cancelled'].includes(ownState)
       const groupBusy = ownPending || (groupLoaded
         ? groupJobs.some(one => !['done', 'failed', 'cancelled'].includes(String(one.state || '')))
         : replacementRunning)
