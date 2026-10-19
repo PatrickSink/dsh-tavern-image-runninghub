@@ -1054,6 +1054,11 @@ let openImageOverlay = null
           widthBarNote ? h('span', { role: 'status', 'aria-live': 'polite', style: { color: /失败/.test(widthBarNote) ? '#f2686b' : '#8bd48b' } }, widthBarNote) : null,
           h('span', { style: { opacity: .5 } }, 'Esc 取消'),
         ) : null,
+        // 定位层：只包图片与右下角那行提示。胶囊相对这一层定位，几何上必然落在图片内部。
+        // 之前胶囊挂在外层容器上，而外层还含图片下方的兄弟节点（取图失败时的提示等），
+        // 它的底边会被撑到图片之下 —— 于是胶囊落到图片外面、偏下（用户反馈）。
+        // 宽度紧贴图片（inline-block + maxWidth:100%），right/bottom 才不会偏到图片外侧。
+        h('div', { key: 'official-img-layer', style: { position: 'relative', display: 'inline-block', maxWidth: '100%' } },
         showImage ? h('img', {
           ref: setImgEl,
           key: 'official-img-' + imgNonce, src, loading: 'lazy', decoding: 'async', alt: title || '插图',
@@ -1085,7 +1090,6 @@ let openImageOverlay = null
           onTouchEnd: () => { cancelPress() },
           onTouchMove: cancelPress,
         }) : placeholder,
-        imgError ? h('div', { style: noteStyle }, imgRetry >= 20 ? '图取不到（' + imgError + '）　' : '正在取回…（第 ' + imgRetry + ' 次）', imgRetry >= 20 ? h('button', { type: 'button', onClick: () => { setImgError(''); setImgRetry(0); setImgNonce(x => x + 1) } }, '重新读取') : null) : null,
         // 状态与操作合成图片右下角的一行，不再是图片下方两个独立的框。
         // 颜色故意与正文文字区分开（琥珀色文字 + 红色取消），一眼能看出是插图的临时状态。
         quietStatus ? null : h('div', {
@@ -1099,6 +1103,7 @@ let openImageOverlay = null
             // boxSizing 必须是 border-box：maxWidth 限的是「内容宽」，而 padding 默认算在内容之外，
             // 于是胶囊实际会比上限宽 24px、比图片还宽 —— 一旦宽过图片就会被挤出边界。
             boxSizing: 'border-box', gap: '8px', maxWidth: 'calc(100% - 16px)',
+            // 定位层宽度即图片宽度，所以 100% 就是图片宽，不会溢出图片
             // overflow: hidden 有两个作用：① 内容再长也被约束在胶囊里，不会溢出图片边界
             //（溢出会看起来像「压着图片下边框」）；② 配合 nowrap 让文字省略而不是折行。
             overflow: 'hidden', textOverflow: 'ellipsis',
@@ -1120,7 +1125,7 @@ let openImageOverlay = null
             // 不再区分「替换任务」与别的来源 —— 提示是「这一组还有没有活在跑」，
             // 与这张图是被重绘、重新生图还是初次生成无关。activeReplacement 是旧的单张判据，
             // 它的 replacement 记录会一直留在数据里，于是每次切换正文都闪一下「替换任务…」。
-            item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel)),
+            item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel),
           validMediaContext(mediaContext) && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
             ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
@@ -1130,7 +1135,10 @@ let openImageOverlay = null
           validMediaContext(mediaContext) && !queryUnavailable && (taskState === 'uncertain' || (taskState === 'cancelled' && cancellationMayContinue))
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
-        )
+          ),
+        ),
+        imgError ? h('div', { style: noteStyle }, imgRetry >= 20 ? '图取不到（' + imgError + '）　' : '正在取回…（第 ' + imgRetry + ' 次）', imgRetry >= 20 ? h('button', { type: 'button', onClick: () => { setImgError(''); setImgRetry(0); setImgNonce(x => x + 1) } }, '重新读取') : null) : null,
+      )
     }
 
     function validMediaContext(context) {
