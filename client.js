@@ -868,15 +868,20 @@ let openImageOverlay = null
       //（失败后点重试、再马上取消，就会掉进这个死角）。
       //
       // ① 新图生成完 → 正文直接刷新显示最新那张（用户要的第一种）。
-      //    判据取自组级状态：组里 createdAt 最大的那张成品。
-      //    用户手动切换过（override.manual）时，只有在他选完之后确实又出了更新的一张才跟随，
-      //    否则会把他刚在查看器里选好的那张立刻改回最新 —— 那就是「切换哪张显示哪张」失效的原因。
+      //    判据不能用时间：作业记录里没有可靠的完成时间 —— completedAt 在整个库里都是空的，
+      //    而 createdAt 是「提交」时刻，重绘的提交可能早于用户那次切换，据此比较会把刚出的
+      //    新图误判成「不比他选的新」，于是永远不跟随（冲撞课前就是这样卡住的）。
+      //    改成看「组里最新成品的身份有没有变」：变了就说明这一处又出了一张，跟着切过去。
+      //    挂载时只记下当前值、不动作，免得刷新页面就擅自改掉用户已经选好的那张。
+      const lastNewestRef = React.useRef('')
       useEffect(() => {
         const mediaId = String(item && item.id || '')
-        if (!mediaId || !newestDoneId || !groupDone.length) return
+        if (!mediaId || !newestDoneId) return
+        const prev = lastNewestRef.current
+        lastNewestRef.current = newestDoneId
+        if (!prev || prev === newestDoneId) return
         const cur = mediaJobOverride.get(mediaId)
         if (String((cur && cur.jobId) || '') === newestDoneId) return
-        if (cur && cur.manual && Number(groupDone[groupDone.length - 1].createdAt || 0) <= Number(cur.at || 0)) return
         setMediaJobOverride(mediaId, newestDoneId)
       }, [newestDoneId, item && item.id])
       const showImage = Boolean(src) && (!imgError || imgRetry < 20)
@@ -957,11 +962,15 @@ let openImageOverlay = null
         quietStatus ? null : h('div', {
           style: {
             position: 'absolute', right: '10px', bottom: '10px',
-            display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end',
-            gap: '10px', maxWidth: 'calc(100% - 20px)',
+            // 必须待在同一行：文案 + 取消/重试/重新查询这些按钮。
+            // 原来是 flexWrap: 'wrap'，宽度一不够就折行，整个胶囊随之变高、视觉上「位置往上跑」
+            // —— 用户看到的就是「取消这张图位置变了，并且换行了」。
+            // 宁可整行短一点、也不要折成两行；文字过长时省略而不是把它挤到下一行。
+            display: 'flex', alignItems: 'center', flexWrap: 'nowrap', justifyContent: 'flex-end',
+            gap: '8px', maxWidth: 'calc(100% - 20px)',
             padding: '4px 12px', borderRadius: '999px',
             background: 'rgba(16,19,26,.78)', backdropFilter: 'blur(4px)',
-            color: '#e2b93b', fontSize: '12px', lineHeight: 1.6, textAlign: 'right',
+            color: '#e2b93b', fontSize: '12px', lineHeight: 1.6, textAlign: 'right', whiteSpace: 'nowrap',
           },
           role: 'status', 'aria-live': 'polite',
           onClick: event => event.stopPropagation(),
