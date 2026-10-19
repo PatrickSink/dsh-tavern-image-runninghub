@@ -927,6 +927,16 @@ let openImageOverlay = null
         : recoveredReady
           ? BASE + '/jobs?id=' + encodeURIComponent(effectiveJobId) + '&image=1'
           : String(item && item.url || '') || (cachedImageReady && jobId && !(item && item.status === 'failed') && !(item && item.data && item.data.cancelled === true) ? BASE + '/jobs?id=' + encodeURIComponent(jobId) + '&image=1' : '')
+      // 取图失败的计数必须跟着 src 走。
+      // 原来 imgRetry 只在手动点「重新读取」时才归零：一个位置失败满 20 次后，
+      // 即使后来这个位置换成了新作业（override 变了、src 已不同），
+      // showImage 仍然因为 imgRetry>=20 为假，永久只剩占位符 —— 图就再也回不来了。
+      // 「删一张、正文里别的图也跟着消失」的观感有一半来自这里。
+      useEffect(() => {
+        setImgError('')
+        setImgRetry(0)
+      }, [src])
+
       const jobMayHaveReachedProvider = Boolean(currentPolledJob && (currentPolledJob.requestMayHaveSucceeded === true || currentPolledJob.state === 'uncertain'))
       // ── 正文显示哪张：只有三种情况，都由明确动作决定，不需要扫全库 ─────────
       // 用户把这件事讲清了：
