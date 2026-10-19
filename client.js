@@ -906,7 +906,7 @@ let openImageOverlay = null
           }
         } catch (error) {
           if (error && error.submissionNotStarted === true) {
-            unlockUncertain(lock)
+            safeUnlock(lock)
             if (typeof showToast === 'function') showToast(String(error.message || '请求未提交'), 'fail')
             setPolledJob({ ...(polledJob || {}), state: 'failed', error: String(error.message || error), id: effectiveJobId })
             return
@@ -1424,6 +1424,12 @@ let openImageOverlay = null
     const UNCERTAIN_LOCK_MS = 10 * 60 * 1000
     function lockUncertain(mediaId) { const k = String(mediaId || ''); if (k) mediaUncertainActions.set(k, Date.now()) }
     function unlockUncertain(mediaId) { const k = String(mediaId || ''); if (k) mediaUncertainActions.delete(k) }
+    // 清锁永远不该成为失败点：它在「放弃/重查成功」之后调用，属于收尾动作。
+    // 一旦它抛错（比如某个作用域里拿不到 unlockUncertain），后面的「重新提交重画」
+    // 就不会执行 —— 用户看到的就是「点了直接生图，只是弹回一句报错」（用户反馈）。
+    function safeUnlock(mediaId) {
+      try { unlockUncertain(mediaId) } catch (error) { try { console.warn('dsh-tavern-image 清锁失败', error) } catch { /* 忽略 */ } }
+    }
     function isUncertainLocked(mediaId) {
       const k = String(mediaId || '')
       if (!k) return false
@@ -1943,7 +1949,7 @@ function versionsOf(jobId) {
             body: JSON.stringify({ operation: 'dismiss', ...view.mediaContext, jobId: view.mediaContext.jobId }),
           })
           if (!r?.ok) { say('未能清除：' + (r?.error || '请求未确认')); return }
-          unlockUncertain(String(view.mediaContext.mediaId || ''))
+          safeUnlock(String(view.mediaContext.mediaId || ''))
         } catch (error) {
           say('未能清除：' + String(error?.message ?? error))
           return
@@ -2879,7 +2885,7 @@ function versionsOf(jobId) {
                   body: JSON.stringify({ operation: 'recover', ...ctx }),
                 }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
                 if (!r || !r.ok) { setActionNote('查询未成功：' + ((r && r.error) || '未确认')); return }
-                unlockUncertain(ctx.mediaId)
+                safeUnlock(ctx.mediaId)
                 setActionUncertain(false)
                 const map = { done: '已找回这张图，出图后自动替换', ready: '已找回这张图，出图后自动替换', pending: '任务仍在处理中', running: '任务仍在处理中', failed: '已确认失败', cancelled: '已确认已取消', uncertain: '状态仍待确认，可点「直接生图」继续' }
                 setActionNote(map[String(r.state || '')] || ('已重新查询：' + String(r.state || '')))
@@ -2899,7 +2905,7 @@ function versionsOf(jobId) {
                   body: JSON.stringify({ operation: 'dismiss', ...ctx }),
                 }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
                 if (!r || !r.ok) { setActionNote('未能清除：' + ((r && r.error) || '未确认')); return }
-                unlockUncertain(ctx.mediaId)
+                safeUnlock(ctx.mediaId)
                 setActionUncertain(false)
               } finally { setActionBusy('') }
               setActionBusy('redraw'); setActionNote('')
