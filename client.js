@@ -747,6 +747,47 @@ let openImageOverlay = null
           ? BASE + '/jobs?id=' + encodeURIComponent(effectiveJobId) + '&image=1'
           : String(item && item.url || '') || (cachedImageReady && jobId && !(item && item.status === 'failed') && !(item && item.data && item.data.cancelled === true) ? BASE + '/jobs?id=' + encodeURIComponent(jobId) + '&image=1' : '')
       const jobMayHaveReachedProvider = Boolean(currentPolledJob && (currentPolledJob.requestMayHaveSucceeded === true || currentPolledJob.state === 'uncertain'))
+      // ── 这一处的作业状态（本节唯一的数据源）───────────────────────────────
+      // 切换、提示、正文显示这三件事曾经各自推断作业状态（比 jobId、猜标记、看时间），
+      // 互相矛盾，反复出问题。现在统一到这里：按 groupId 从 /history 拉这一处的全部
+      // 已出图作业。下面三处判据都基于它 ——
+      //   ① 替换任务是否真的完成（看它指向的作业在表里的 state）
+      //   ② 是否出了更新的图（表里 createdAt 最大的那张）
+      //   ③ override 指向的作业是否已被删除（不在表里就清掉）
+      const [siblingJobs, setSiblingJobs] = React.useState(null)
+      useEffect(() => {
+        const mediaId = String(item && item.id || '')
+        if (!mediaId) return undefined
+        let live = true
+        const tick = async () => {
+          const cur = mediaJobOverride.get(mediaId)
+          const baseId = String((cur && cur.jobId) || '') || jobId
+          if (!baseId) return
+          try {
+            // 先用当前这张反查 groupId，再按 groupId 精确拉这一处的全部作业
+            //（该参数是本轮给 /history 加的，避免早先的作业掉出 60 条窗口）
+            const first = await jsonFetch(BASE + '/history')
+            if (!live) return
+            const rows = (first && Array.isArray(first.jobs)) ? first.jobs : []
+            const self = rows.find(one => String(one && one.id) === baseId)
+            const group = String((self && self.groupId) || '')
+            let mine = []
+            if (group) {
+              const exact = await jsonFetch(BASE + '/history?groupId=' + encodeURIComponent(group))
+              if (!live) return
+              const rows2 = (exact && Array.isArray(exact.jobs)) ? exact.jobs : []
+              mine = rows2
+            }
+            if (!mine.length) mine = rows.filter(one => one && one.byteLength && group && String(one.groupId || '') === group)
+            mine = mine.filter(one => one && one.byteLength)
+            mine.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+            setSiblingJobs({ group, list: mine })
+          } catch { /* 轮询失败就保留上一次的数据 */ }
+        }
+        const timer = setInterval(tick, 2500)
+        tick()
+        return () => { live = false; clearInterval(timer) }
+      }, [item && item.id, jobId])
       // 排查「切图后正文不换」时加的那条渲染取证（official-image-render）已删除：
       // 结论已经拿到（真正的原因是 attachment 才是显示来源），不必再每次渲染都上报一次。
       const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (replacement && replacement.state === 'uncertain' && !recoveredReady))
@@ -764,16 +805,17 @@ let openImageOverlay = null
       //    完成 —— recoveredReady 因此为 true，把整块状态压成「已完成」，提示照样不出现。
       //    所以「替换任务进行中」也必须在 recoveredReady 之前。
       //
-      //    标记本身可能因为宿主重启而永远停在 pending：替换任务放在内存的 tasks 里，
-      //    重启后没人再回写终态（数据里就有两处这样挂着）。
-      //    注意不能用「data.jobId === replacement.jobId」当完成判据 —— 用户在生成中切图时，
-      //    写回会把 data.jobId 改成他选的那张，碰巧与 replacement.jobId 相同，于是被误判成
-      //    已完成、提示消失（上一版就是这么错的）。改用时间上限：超过 15 分钟还挂着的不再算。
-      const repStarted = Number((replacement && replacement.startedAt) || 0)
-      const repStale = repStarted > 0 && (Date.now() - repStarted) > 15 * 60 * 1000
+      //    标记自己靠不住：它由 media-actions 在内存任务跑到终态时回写，宿主重启后那些
+      //    任务没了，标记就永远停在 pending（数据里真有两处）。也不能用「data.jobId 是否
+      //    等于 replacement.jobId」判断 —— 用户生成中切图时写回会把它俩改成同一张（上一版
+      //    就是这么误判的）。所以落到 siblingJobs：它指向的作业在表里且已 done，才算完成。
+      const replacementJobId = String((replacement && replacement.jobId) || '')
+      const replacementJob = replacementJobId && siblingJobs
+        ? siblingJobs.list.find(one => String(one.id) === replacementJobId)
+        : null
       const replacementActive = Boolean(replacement
         && ['pending', 'running', 'queued', 'processing'].includes(String(replacement.state || '')))
-        && !repStale
+        && !(replacementJob && replacementJob.state === 'done')
       const itemPending = Boolean(item && item.status === 'pending')
       const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : replacementActive ? String(replacement.state) : itemPending ? 'pending' : recoveredReady ? 'done' : String(
         currentPolledJob && currentPolledJob.state
@@ -809,41 +851,33 @@ let openImageOverlay = null
       // 都能打开提示词编辑器，改完重画。否则这些状态下页面只剩一行文字，用户没有任何出路
       //（失败后点重试、再马上取消，就会掉进这个死角）。
       //
-      // 「这一处出了新图就自动跟随」：用户没进查看器时，正文应该显示最新生成的那张。
-      // 轻量轮询 /history，找出与当前这张同组（groupId）里最新的已出图作业，比现在新就同步过来。
-      // 用户手动选过也照样跟随 —— 新出的那张就是最新的，这也是用户的明确要求。
+      // 「这一处出了新图就自动跟随」以及「override 指向的图被删了就清掉」。
+      // 两者都基于上面那份 siblingJobs，不再各自去拉一遍 /history、也不再各用各的判据。
       useEffect(() => {
         const mediaId = String(item && item.id || '')
-        if (!mediaId) return undefined
-        let live = true
-        const tick = async () => {
-          const cur = mediaJobOverride.get(mediaId)
-          const baseId = String((cur && cur.jobId) || '') || jobId
-          if (!baseId) return
-          try {
-            const r = await jsonFetch(BASE + '/history')
-            if (!live) return
-            const rows = (r && Array.isArray(r.jobs)) ? r.jobs : []
-            const self = rows.find(one => String(one && one.id) === baseId)
-            const group = String((self && self.groupId) || '')
-            if (!group) return
-            const mine = rows.filter(one => one && one.byteLength && String(one.groupId || '') === group)
-            if (!mine.length) return
-            mine.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
-            const newest = mine[mine.length - 1]
-            const latest = String(newest && newest.id || '')
-            if (!latest || latest === baseId) return
-            // 用户手动选过就尊重他：只有在他选完之后又生成了更新的图，才跟随过去。
-            // （否则 2.5 秒一次的轮询会把他刚选的那张立刻改回最新 —— 那就是「切换哪张
-            // 就显示哪张」失效的原因。）
-            if (cur && cur.manual && Number(newest.createdAt || 0) <= Number(cur.at || 0)) return
-            setMediaJobOverride(mediaId, latest)
-          } catch { /* 轮询失败不影响显示 */ }
+        if (!mediaId || !siblingJobs) return
+        const cur = mediaJobOverride.get(mediaId)
+        const curId = String((cur && cur.jobId) || '')
+        // ① override 指向的作业已经不在这一处了（被删掉）→ 清掉覆盖，
+        //    正文回落到媒体项自身的 data.jobId，否则 src 会指向一个不存在的作业、图裂开，
+        //    看起来就像「删不掉」。
+        if (curId && !siblingJobs.list.some(one => String(one.id) === curId)) {
+          setMediaJobOverride(mediaId, '')
+          return
         }
-        const timer = setInterval(tick, 2500)
-        tick()
-        return () => { live = false; clearInterval(timer) }
-      }, [item && item.id, jobId])
+        // ② 这一处出现了更新的图 → 跟随过去
+        if (!siblingJobs.list.length) return
+        const baseId = curId || jobId
+        if (!baseId) return
+        const newest = siblingJobs.list[siblingJobs.list.length - 1]
+        const latest = String(newest && newest.id || '')
+        if (!latest || latest === baseId) return
+        // 用户手动选过就尊重他：只有在他选完之后又生成了更新的图，才跟随过去。
+        //（否则 2.5 秒一次的轮询会把他刚选的那张立刻改回最新 —— 那就是「切换哪张
+        // 就显示哪张」失效的原因。）
+        if (cur && cur.manual && Number(newest.createdAt || 0) <= Number(cur.at || 0)) return
+        setMediaJobOverride(mediaId, latest)
+      }, [siblingJobs, item && item.id, jobId])
       const showImage = Boolean(src) && (!imgError || imgRetry < 20)
       const placeholderText = taskState === 'failed' ? '配图失败 · 点这里改提示词重画'
         : taskState === 'cancelled' ? '这张图已取消 · 点这里改提示词重画'
