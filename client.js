@@ -547,12 +547,31 @@ let openImageOverlay = null
      *（2.5 秒一次），于是「刚提交完退出来看不到生成中」（用户反馈）。
      * 登记后：状态未知时先按「在跑」算，等轮询或组列表给出终态再自然落下。
      */
-    const submittedJobs = new Map()
+    /**
+     * 作业的终态集合 —— 落在其中的都不该再显示「生成中」。
+     *
+     * 两套词都要收：作业用 done，媒体项与替换记录用 ready。
+     * uncertain 也属于终态：它不是「还在跑」，而是「已提交但结果未知，需用户去平台确认」，
+     * 状态不会自己变化。若把它算作进行中，提示就永远不消失 —— 库里那三个 uncertain 的作业
+     * 正是这样把提示钉住的（用户反馈：生成中的提示一直不消失）。
+     */
+    const SETTLED_STATES = ['done', 'ready', 'failed', 'cancelled', 'uncertain']
+    const isSettled = state => SETTLED_STATES.includes(String(state || ''))
+
+    const submittedJobs = new Map()   // mediaId -> { jobId, at }
     function noteSubmittedJob(mediaId, jobId) {
       const mid = String(mediaId || '')
       const jid = String(jobId || '')
-      if (mid && jid) submittedJobs.set(mid, jid)
+      if (mid && jid) submittedJobs.set(mid, { jobId: jid, at: Date.now() })
     }
+    function submittedJobOf(mediaId) {
+      const hit = submittedJobs.get(String(mediaId || ''))
+      return hit ? String(hit.jobId || '') : ''
+    }
+    // 登记后一直查不到状态的，超过这个时长就不再当作「在跑」。
+    // 没有它的话，一旦轮询和组列表都拿不到这个作业的状态（例如它被删了、
+    // 或提交后请求就断了），提示会被永远钉住 —— 这毛病已经出现过两次。
+    const SUBMITTED_UNKNOWN_MS = 90 * 1000
 
     /** 更新「这一处该显示哪张」并通知所有插图重渲染（jobId 传空则清除覆盖）。 */
     function setMediaJobOverride(mediaId, jobId, opts) {
@@ -841,8 +860,9 @@ let openImageOverlay = null
       // 所以 currentPolledJob 立刻就有值，不必等 /history 轮询。
       // 注意不能给「还没有轮询结果」兜底成 pending —— 只读的「重新查询」也会写下 actionJobId，
       // 那样已完成的图会被当成还在跑，凭空挂出「取消这张图」（测试先暴露了这一点）。
+      const ownMediaId = String(item && item.id || '')
       const ownJobId = String(activeActionJobId.current || actionJobId
-        || submittedJobs.get(String(item && item.id || '')) || '')
+        || submittedJobOf(ownMediaId) || '')
       // 状态优先级：本地轮询到的 > 组列表里的 > 未知。
       // 未知时按「在跑」算 —— 那正是刚提交、两个列表都还没更新的时刻，
       // 也正是最需要立刻显示提示的时候；等列表给出终态后自然落下。
@@ -857,10 +877,11 @@ let openImageOverlay = null
       // 终态要把 ready 也算上 —— 这个插件里两套词：作业用 done，媒体项/替换记录用 ready。
       // 只认 done 的话，一次只读的「重新查询」返回 ready 后仍会被当成「在跑」，
       // 已完成的图会凭空挂出「取消这张图」（测试抓到的就是这个）。
-      const ownPending = Boolean(ownJobId)
-        && (ownState ? !['done', 'ready', 'failed', 'cancelled'].includes(ownState) : true)
+      const ownUnknownAge = Date.now() - Number((submittedJobs.get(ownMediaId) || {}).at || 0)
+      const ownPending = Boolean(ownJobId) && (ownState ? !isSettled(ownState)
+        : ownUnknownAge < SUBMITTED_UNKNOWN_MS)
       const groupBusy = ownPending || (groupLoaded
-        ? groupJobs.some(one => !['done', 'ready', 'failed', 'cancelled'].includes(String(one.state || '')))
+        ? groupJobs.some(one => !isSettled(one.state))
         : replacementRunning)
       // 组里最新的成品 —— 自动刷新就是切到它
       const groupDone = groupJobs
@@ -893,7 +914,7 @@ let openImageOverlay = null
       // 否则 ownState 会永远停在「未知」，提示常驻 —— 这个毛病在前面几轮反复出现过。
       useEffect(() => {
         const mid = String(item && item.id || '')
-        const jid = String(submittedJobs.get(mid) || '')
+        const jid = submittedJobOf(mid)
         if (!mid || !jid || !groupLoaded) return
         const present = groupJobs.some(one => String(one.id) === jid)
         const tracked = String(activeActionJobId.current || actionJobId || '') === jid
