@@ -116,6 +116,8 @@ let openImageOverlay = null
       'apply-version-skip', 'apply-version-result', 'apply-version-threw',
       // 覆盖表写入（含监听器数量）：确认「切图后正文换图」这条链路走到了哪一步。
       'media-job-override',
+      // 提交登记是否成功：断了就会出现「提交成功但正文看不到生成中」，必须能看到。
+      'note-submitted',
       // 状态行组合（低频，仅在变化时上报）：定位「该出现提示却没出现」。
       'status-line',
     ])
@@ -562,7 +564,14 @@ let openImageOverlay = null
     function noteSubmittedJob(mediaId, jobId) {
       const mid = String(mediaId || '')
       const jid = String(jobId || '')
-      if (mid && jid) submittedJobs.set(mid, { jobId: jid, at: Date.now() })
+      // 登记成败都留痕：这条链一旦断掉，表现是「明明提交成功，正文却看不到生成中」，
+      // 而且只在组里恰好没有别的活时才显形，光看现象极难定位（前面反复栽在这里）。
+      if (!mid || !jid) {
+        reportHost('note-submitted', { ok: 0, reason: !mid ? 'no-mediaId' : 'no-jobId', mediaId: mid.slice(0, 12), jobId: jid.slice(0, 8) })
+        return
+      }
+      submittedJobs.set(mid, { jobId: jid, at: Date.now() })
+      reportHost('note-submitted', { ok: 1, mediaId: mid.slice(0, 12), jobId: jid.slice(0, 8) })
     }
     function submittedJobOf(mediaId) {
       const hit = submittedJobs.get(String(mediaId || ''))
@@ -1506,8 +1515,12 @@ function versionsOf(jobId) {
           })
           if (!r?.ok || !r.jobId) { say('重画失败：' + (r?.error || '没拿到新作业')); return }
           redrawnJobs.set(view.jobId, r.jobId)
-          // 同样登记（这条走 /redraw，没有媒体项 id，用当前查看的那张所挂的媒体项）
-          noteSubmittedJob(view.mediaContext && view.mediaContext.mediaId, r.jobId)
+          // 登记本次提交。注意媒体项 id 要从 view.mediaId 取 —— 查看器的视图里只有 mediaId，
+          // 没有 mediaContext（那是提示词编辑器才有的字段）。之前这里读 view.mediaContext.mediaId，
+          // 恒为 undefined，于是 submittedJobs 永远是空的，正文那侧像没提交过一样、看不到
+          // 「生成中」。这就是「偶发」的真相：平时靠 groupBusy 兜着，一旦那个时刻组里没有
+          // 别的活，提示就没了。
+          noteSubmittedJob(view.mediaId || (view.mediaContext && view.mediaContext.mediaId), r.jobId)
           persistRedraw()
           try { window.dispatchEvent(new CustomEvent('dsh-tavern-image:planned', { detail: { messageId: String(lastSessionId || '') } })) } catch {}
           close()
