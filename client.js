@@ -1347,19 +1347,31 @@ let openImageOverlay = null
           const width = Math.min(320, Math.round(vw * 0.86))
           const left = Math.max(8, Math.min(statusPeek.x - 16, vw - width - 8))
           const top = Math.max(8, Math.min(statusPeek.y + 14, vh - 150))
+          // 外层是铺满视口的透明遮罩，它自己就能接住点击 —— 点屏幕任意位置都会收起。
+          // 原先只有弹窗本体带 onClick，点别处没反应（用户要求：点任意位置消失）。
+          // 背景用 transparent 而不是 rgba(0,0,0,…)：不遮挡内容，但照样接收指针事件
+          //（只有 pointer-events:none 才会让点击穿透，这里不用）。
           return h('div', {
             key: 'status-peek',
             onClick: () => setStatusPeek(null),
             style: {
-              position: 'fixed', left: left + 'px', top: top + 'px', zIndex: 2147483003,
-              width: width + 'px', boxSizing: 'border-box',
-              padding: '9px 12px', borderRadius: '10px',
-              background: 'rgba(20,23,30,.97)', border: '1px solid rgba(120,140,170,.45)',
-              color: '#dbe3ee', fontSize: '12px', lineHeight: 1.65,
-              whiteSpace: 'normal', wordBreak: 'break-word',
-              boxShadow: '0 10px 28px rgba(0,0,0,.5)', cursor: 'pointer',
+              position: 'fixed', left: 0, top: 0, right: 0, bottom: 0,
+              zIndex: 2147483003, background: 'transparent', cursor: 'pointer',
             },
-          }, statusPeek.text)
+          },
+            h('div', {
+              onClick: () => setStatusPeek(null),
+              style: {
+                position: 'absolute', left: left + 'px', top: top + 'px',
+                width: width + 'px', boxSizing: 'border-box',
+                padding: '9px 12px', borderRadius: '10px',
+                background: 'rgba(20,23,30,.97)', border: '1px solid rgba(120,140,170,.45)',
+                color: '#dbe3ee', fontSize: '12px', lineHeight: 1.65,
+                whiteSpace: 'normal', wordBreak: 'break-word',
+                boxShadow: '0 10px 28px rgba(0,0,0,.5)', cursor: 'pointer',
+              },
+            }, statusPeek.text),
+          )
         })() : null,
       )
     }
