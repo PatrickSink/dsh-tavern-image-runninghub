@@ -538,6 +538,22 @@ let openImageOverlay = null
      */
     const mediaJobOverride = new Map()
     const mediaJobListeners = new Set()
+
+    /**
+     * 前端自己提交过、还在等结果的作业：mediaId → jobId。
+     *
+     * 查看器的「生图」有两条路径（/media-action 与 /redraw），正文的「再次生图」走
+     * mediaAction —— 三处都得登记，否则正文不知道自己有活在跑，只能等 /history 轮询
+     *（2.5 秒一次），于是「刚提交完退出来看不到生成中」（用户反馈）。
+     * 登记后：状态未知时先按「在跑」算，等轮询或组列表给出终态再自然落下。
+     */
+    const submittedJobs = new Map()
+    function noteSubmittedJob(mediaId, jobId) {
+      const mid = String(mediaId || '')
+      const jid = String(jobId || '')
+      if (mid && jid) submittedJobs.set(mid, jid)
+    }
+
     /** 更新「这一处该显示哪张」并通知所有插图重渲染（jobId 传空则清除覆盖）。 */
     function setMediaJobOverride(mediaId, jobId, opts) {
       const mid = String(mediaId || '')
@@ -698,6 +714,8 @@ let openImageOverlay = null
           const nextJobId = String(result.jobId || effectiveJobId)
           activeActionJobId.current = nextJobId
           setActionJobId(nextJobId)
+          // 登记「我提交了这个作业」：正文靠它立刻显示生成中，不必等 /history 轮询
+          noteSubmittedJob(mediaContext.mediaId, nextJobId)
           setPolledJob({ ...(polledJob || {}), ...result, id: nextJobId, state: result.state || (operation === 'cancel' ? 'cancelled' : 'pending') })
           const providerMayStillBeWorking = result.requestMayHaveSucceeded === true || (result.state === 'cancelled' && (result.cancelMayHaveContinued === true || result.requestStarted === true))
           if (result.state === 'uncertain' || providerMayStillBeWorking) mediaUncertainActions.add(lock)
@@ -823,15 +841,24 @@ let openImageOverlay = null
       // 所以 currentPolledJob 立刻就有值，不必等 /history 轮询。
       // 注意不能给「还没有轮询结果」兜底成 pending —— 只读的「重新查询」也会写下 actionJobId，
       // 那样已完成的图会被当成还在跑，凭空挂出「取消这张图」（测试先暴露了这一点）。
-      const ownJobId = String(activeActionJobId.current || actionJobId || '')
-      const ownState = ownJobId && currentPolledJob && String(currentPolledJob.id) === ownJobId
-        ? String(currentPolledJob.state || '')
-        : ''
+      const ownJobId = String(activeActionJobId.current || actionJobId
+        || submittedJobs.get(String(item && item.id || '')) || '')
+      // 状态优先级：本地轮询到的 > 组列表里的 > 未知。
+      // 未知时按「在跑」算 —— 那正是刚提交、两个列表都还没更新的时刻，
+      // 也正是最需要立刻显示提示的时候；等列表给出终态后自然落下。
+      let ownState = ''
+      if (ownJobId) {
+        if (currentPolledJob && String(currentPolledJob.id) === ownJobId) ownState = String(currentPolledJob.state || '')
+        else {
+          const hit = groupJobs.find(one => String(one.id) === ownJobId)
+          if (hit) ownState = String(hit.state || '')
+        }
+      }
       // 终态要把 ready 也算上 —— 这个插件里两套词：作业用 done，媒体项/替换记录用 ready。
       // 只认 done 的话，一次只读的「重新查询」返回 ready 后仍会被当成「在跑」，
       // 已完成的图会凭空挂出「取消这张图」（测试抓到的就是这个）。
-      const ownPending = Boolean(ownJobId) && Boolean(ownState)
-        && !['done', 'ready', 'failed', 'cancelled'].includes(ownState)
+      const ownPending = Boolean(ownJobId)
+        && (ownState ? !['done', 'ready', 'failed', 'cancelled'].includes(ownState) : true)
       const groupBusy = ownPending || (groupLoaded
         ? groupJobs.some(one => !['done', 'ready', 'failed', 'cancelled'].includes(String(one.state || '')))
         : replacementRunning)
@@ -862,6 +889,16 @@ let openImageOverlay = null
       //    凭空冒出一行「替换任务完成」，直到再次触发轮询才消失（用户反馈的问题）。
       // ② 不能带 !activeReplacement —— 替换记录在出图完成后依然存在，带上它同样会赖着不走。
       const quietStatus = ['done', 'ready'].includes(taskState) && !(item && item.status === 'failed')
+      // 登记过的作业如果已经不在组列表里（被删掉、或本来就不属于这一组），就清掉登记。
+      // 否则 ownState 会永远停在「未知」，提示常驻 —— 这个毛病在前面几轮反复出现过。
+      useEffect(() => {
+        const mid = String(item && item.id || '')
+        const jid = String(submittedJobs.get(mid) || '')
+        if (!mid || !jid || !groupLoaded) return
+        const present = groupJobs.some(one => String(one.id) === jid)
+        const tracked = String(activeActionJobId.current || actionJobId || '') === jid
+        if (!present && !tracked) submittedJobs.delete(mid)
+      }, [groupLoaded, groupJobs.length, item && item.id])
       // 低频取证：只在状态组合变化时上报一次（不是每次渲染），用来定位
       // 「该出现提示却没出现」「新图没自动刷新」这类问题。稳定后可以删。
       const statusSig = [taskState, groupLoaded ? 1 : 0, groupJobs.length, groupBusy ? 1 : 0, newestDoneId.slice(0, 8), String(item && item.status || '')].join('|')
@@ -1437,6 +1474,8 @@ function versionsOf(jobId) {
             })
             if (!result?.ok || !result.jobId) { say('重画状态待确认：' + (result?.error || '请检查生图平台，暂不自动重试')); return }
             mediaUncertainActions.delete(lock)
+            // 登记本次提交（这条路径走的是 /media-action，不经过 mediaAction 函数，原先漏了登记）
+            noteSubmittedJob(view.mediaContext.mediaId, result.jobId)
             openPromptEditor({ busy: '', submitted: true, note: '已提交重画，任务号 ' + String(result.jobId) + '；完成后会替换这张图。' })
             return
           }
@@ -1446,6 +1485,8 @@ function versionsOf(jobId) {
           })
           if (!r?.ok || !r.jobId) { say('重画失败：' + (r?.error || '没拿到新作业')); return }
           redrawnJobs.set(view.jobId, r.jobId)
+          // 同样登记（这条走 /redraw，没有媒体项 id，用当前查看的那张所挂的媒体项）
+          noteSubmittedJob(view.mediaContext && view.mediaContext.mediaId, r.jobId)
           persistRedraw()
           try { window.dispatchEvent(new CustomEvent('dsh-tavern-image:planned', { detail: { messageId: String(lastSessionId || '') } })) } catch {}
           close()
