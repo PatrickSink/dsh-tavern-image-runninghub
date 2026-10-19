@@ -1293,7 +1293,7 @@ let openImageOverlay = null
             // 行高不再写在容器上：容器只负责「一行、垂直居中」，
             // 具体行高交给文字与按钮各自统一，否则文字那格会比按钮高一点，
             // 视觉上就是「左边（状态文字）偏高」（用户反馈）。
-            color: '#e2b93b', fontSize: '12px', lineHeight: 1,
+            color: '#e2b93b', fontSize: '12px',
           },
           role: 'status', 'aria-live': 'polite',
           onClick: event => event.stopPropagation(),
@@ -1305,12 +1305,13 @@ let openImageOverlay = null
           h('span', {
             key: 'illustration-status-text',
             title: statusFullText,
-            // 用 flex 居中而不是靠基线：这格带 overflowX 滚动，会自成一个排版上下文，
-            // 行高与按钮不一致时就会整体偏移。
-            // 固定成 20px 的行盒：按钮也是 20px，两者在同一行里严格等高，
-            // 不会再出现「左边（文字）偏高」。overflowX 的滚动容器如果高度由内容决定，
-            // 它和按钮的行盒就不一样高，flex 居中之后基线仍会错开。
-            style: { minWidth: 0, display: 'block', height: '20px', lineHeight: '20px', overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap', cursor: 'pointer', scrollbarWidth: 'none' },
+            // 不固定高度、不裁切。
+            // 上一版给这格定死 20px + overflowY:hidden，中文字形实际渲染高度超过行盒时
+            // 下半截就被切掉了 —— 用户看到的是「字只显示上半部分」。
+            // 根子在于横向滚动容器必须有确定高度，一旦定死就必然有裁字风险，
+            // 所以横向滚动一并去掉：自然高度 + lineHeight 1.5 + 上下各 1px 余量。
+            // 「看全」交给点击弹出的全文浮层，那才是可靠途径。
+            style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', cursor: 'pointer' },
             onClick: event => {
               event.stopPropagation()
               setStatusPeek({ text: statusFullText, x: Number(event.clientX || 0), y: Number(event.clientY || 0) })
@@ -1318,23 +1319,23 @@ let openImageOverlay = null
           }, statusFullText),
           validMediaContext(mediaContext) && !actionLocked && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
             ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
           validMediaContext(mediaContext) && !actionLocked && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
             ? h('button', { type: 'button', onClick: () => mediaAction('retry'), disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
           // 「重新查询」只对「待确认」有意义 —— 那是去平台把已经产出的结果找回来
           validMediaContext(mediaContext) && !queryUnavailable && taskState === 'uncertain'
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
           // 取消后（本地已停、平台可能仍在跑）给两个出口，缺一不可：
           //   ① 重新查询 —— 只读确认终态，顺带解开重画锁；没有它，这一处之后就没法再重画了。
           //   ② 关闭     —— 纯收起这条提示（用户要求），不去动后端状态。
           validMediaContext(mediaContext) && !queryUnavailable && taskState === 'cancelled' && cancellationMayContinue
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
           validMediaContext(mediaContext) && taskState === 'cancelled' && cancellationMayContinue
             ? h('button', { type: 'button', onClick: closeStatusRow, disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '关闭') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '关闭') : null,
         ) : null,
         ),
         imgError ? h('div', { style: noteStyle }, imgRetry >= 20 ? '图取不到（' + imgError + '）　' : '正在取回…（第 ' + imgRetry + ' 次）', imgRetry >= 20 ? h('button', { type: 'button', onClick: () => { setImgError(''); setImgRetry(0); setImgNonce(x => x + 1) } }, '重新读取') : null) : null,
