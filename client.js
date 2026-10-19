@@ -1017,7 +1017,8 @@ let openImageOverlay = null
       const placeholder = h('div', {
         key: 'illustration-placeholder',
         title: '点一下或右键改提示词 / 重画',
-        style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '110px', maxWidth: 'min(660px, 96vw)', borderRadius: '10px', background: '#1a1d24', border: '1px dashed #2c313c', color: '#8b93a1', fontSize: '12px', cursor: 'pointer', margin: '10px 0', userSelect: 'none' },
+        // 同图片：不放 margin，留白由 wrapStyle 提供（否则右下角提示会落到容器外边）
+        style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '110px', maxWidth: 'min(660px, 96vw)', borderRadius: '10px', background: '#1a1d24', border: '1px dashed #2c313c', color: '#8b93a1', fontSize: '12px', cursor: 'pointer', margin: 0, userSelect: 'none' },
         onClick: () => openEditorFor(displayJobId, title, displayMediaContext),
         onContextMenu: event => {
           cancelPress()
@@ -1060,7 +1061,10 @@ let openImageOverlay = null
           title: '点一下看大图 · 右键或长按改提示词 / 重画 · 双击调显示大小',
           // 覆盖 tavern.css 的 .dsh-tavern-illustration img 限制（320x240）：
           // 行内 style 优先级高于 CSS 类，所以这里写死 width/maxWidth/maxHeight 三件套。
-          style: { display: 'block', ...imageWidthStyle({ width: 'auto', maxWidth: 'min(660px, 96vw)' }, displayWidth), height: 'auto', maxHeight: 'none', borderRadius: '10px', cursor: 'zoom-in', background: '#1a1d24', margin: '10px 0', touchAction: 'manipulation' },
+          // 不放 margin：容器的留白由 wrapStyle 的 margin 提供。图片自己带 margin 的话，
+          // 容器底边会被推到图片下边缘之外，而右下角那行提示是相对容器定位的，
+          // 于是它落在图片外面往下（用户反馈的「生成中超出图片范围」）。
+          style: { display: 'block', ...imageWidthStyle({ width: 'auto', maxWidth: 'min(660px, 96vw)' }, displayWidth), height: 'auto', maxHeight: 'none', borderRadius: '10px', cursor: 'zoom-in', background: '#1a1d24', margin: 0, touchAction: 'manipulation' },
           // 带上 displayMediaContext（gameId/mediaId/textVersion/turn 都齐）：查看器里的
           // 「再次生图」与「关闭时写回正文」都要这几个字段，缺了会被判「参数无效」。
           onClick: () => { if (Date.now() < suppressTapUntil.current) return; viewImage(displayJobId, title, displayMediaContext) },
@@ -1092,18 +1096,22 @@ let openImageOverlay = null
             // —— 用户看到的就是「取消这张图位置变了，并且换行了」。
             // 宁可整行短一点、也不要折成两行；文字过长时省略而不是把它挤到下一行。
             display: 'flex', alignItems: 'center', flexWrap: 'nowrap', justifyContent: 'flex-end',
-            gap: '8px', maxWidth: 'calc(100% - 20px)',
+            // boxSizing 必须是 border-box：maxWidth 限的是「内容宽」，而 padding 默认算在内容之外，
+            // 于是胶囊实际会比上限宽 24px、比图片还宽 —— 一旦宽过图片就会被挤出边界。
+            boxSizing: 'border-box', gap: '8px', maxWidth: 'calc(100% - 16px)',
             // overflow: hidden 有两个作用：① 内容再长也被约束在胶囊里，不会溢出图片边界
             //（溢出会看起来像「压着图片下边框」）；② 配合 nowrap 让文字省略而不是折行。
             overflow: 'hidden', textOverflow: 'ellipsis',
             padding: '4px 12px', borderRadius: '999px',
             background: 'rgba(16,19,26,.78)', backdropFilter: 'blur(4px)',
-            color: '#e2b93b', fontSize: '12px', lineHeight: 1.6, textAlign: 'right', whiteSpace: 'nowrap',
+            color: '#e2b93b', fontSize: '12px', lineHeight: 1.6, textAlign: 'right',
           },
           role: 'status', 'aria-live': 'polite',
           onClick: event => event.stopPropagation(),
         },
-          h('span', null,
+          // 文字部分允许收缩并省略：这样窄屏上「生成中」和「取消这张图」一定待在同一行，
+          // 被压缩的是文字，按钮保持完整可点。
+          h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
             taskState === 'uncertain' ? (queryUnavailable
               ? '状态待确认：旧作业没有保存 ComfyUI 任务号，无法查询找回；若 ComfyUI 未收到任务，请从正文末重新生图。'
               : '状态待确认：任务号 ' + effectiveJobId + (currentPolledJob?.comfyId ? '（ComfyUI ' + String(currentPolledJob.comfyId) + '）' : currentPolledJob?.providerTaskId ? '（平台任务 ' + String(currentPolledJob.providerTaskId) + '）' : '') + '；请到生图平台检查，暂不自动重试。') :
@@ -1115,13 +1123,13 @@ let openImageOverlay = null
             item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel)),
           validMediaContext(mediaContext) && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
             ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy,
-                style: { background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
           validMediaContext(mediaContext) && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
             ? h('button', { type: 'button', onClick: () => mediaAction('retry'), disabled: actionBusy,
-                style: { background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
           validMediaContext(mediaContext) && !queryUnavailable && (taskState === 'uncertain' || (taskState === 'cancelled' && cancellationMayContinue))
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
-                style: { background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
         )
     }
 
