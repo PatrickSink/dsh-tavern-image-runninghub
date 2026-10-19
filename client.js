@@ -1105,8 +1105,20 @@ let openImageOverlay = null
         : taskState === 'cancelled' && cancellationMayContinue ? '已停止本地等待，但平台请求可能已发出并继续生成；请到生图平台检查用量。' + (replacement?.error ? ' ' + String(replacement.error).slice(0, 140) : '')
           : taskState === 'cancelled' ? '已取消'
             : item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel
-      // 提示行是告知性的：用户看完可以关掉。只影响本地显示，不去动后端状态。
-      const [statusClosed, setStatusClosed] = React.useState(false)
+      // 提示行是告知性的：用户看完可以关掉，只影响本地显示，不去动后端状态。
+      // 「关掉」必须跨刷新生效（用户反馈：关闭之后刷新又冒出来）—— 所以记在 localStorage 里，
+      // 并且按「这条提示的原文」记：内容变了（新一轮任务、新的错误）就该重新出现，
+      // 而不是被上一次的关闭动作一并压掉。
+      const statusClosedKey = 'dsh-tavern-image-status-closed:' + String(item && item.id || '')
+      const [statusClosedText, setStatusClosedText] = React.useState(() => {
+        try { return String(localStorage.getItem(statusClosedKey) || '') } catch { return '' }
+      })
+      const statusClosed = Boolean(statusFullText) && statusClosedText === statusFullText
+      const closeStatusRow = () => {
+        setStatusPeek(null)
+        setStatusClosedText(String(statusFullText || ''))
+        try { localStorage.setItem(statusClosedKey, String(statusFullText || '')) } catch { /* 存不了就只影响本次 */ }
+      }
       // 点状态行「就近」弹全文
       const [statusPeek, setStatusPeek] = React.useState(null)
       const showStatusRow = !quietStatus && !statusClosed
@@ -1220,7 +1232,7 @@ let openImageOverlay = null
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
           validMediaContext(mediaContext) && taskState === 'cancelled' && cancellationMayContinue
-            ? h('button', { type: 'button', onClick: () => { setStatusPeek(null); setStatusClosed(true) }, disabled: actionBusy,
+            ? h('button', { type: 'button', onClick: closeStatusRow, disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '关闭') : null,
         ) : null,
         ),
