@@ -903,8 +903,25 @@ let openImageOverlay = null
       // 只有「新图生成完」这一条需要等待，见下面 taskFinished 的处理。
       // 排查「切图后正文不换」时加的那条渲染取证（official-image-render）已删除：
       // 结论已经拿到（真正的原因是 attachment 才是显示来源），不必再每次渲染都上报一次。
-      const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (replacement && replacement.state === 'uncertain' && !recoveredReady))
-      const isCancelled = !recoveredReady && (Boolean(item && item.data && item.data.cancelled === true) || Boolean(currentPolledJob && currentPolledJob.state === 'cancelled') || Boolean(replacement && replacement.state === 'cancelled'))
+      // replacement 记录的是「这一处的替换任务」，但它可能停在好几轮之前（取消留下的 uncertain
+      // 尤其如此）。只有当它没有被更新的作业取代时，它的结局才代表「当下」——
+      // 否则会出现「图上早就换过好几轮了，正文还挂着上一轮的取消提示/待确认」，
+      // 而且那个旧结局还会把「正在生成」盖掉（用户反馈的三个问题都源于此）。
+      // 判据：本组 groupJobs 里有没有比它更晚创建的作业。
+      const replacementJobId = String((replacement && replacement.jobId) || '')
+      const replacementIsCurrent = (() => {
+        if (!replacementJobId) return false
+        // 组列表还没回来时保守按它算（宁可不显示提示，也不要凭空断言「已结束」）
+        if (!groupJobs.length) return true
+        const mine = groupJobs.find(one => String(one.id) === replacementJobId)
+        if (!mine) return false            // 它已经不在这一组的作业列表里 → 旧记录
+        return !groupJobs.some(one => Number(one.createdAt || 0) > Number(mine.createdAt || 0))
+      })()
+      const currentReplacement = replacementIsCurrent ? replacement : null
+      // 注意这三处都用 currentReplacement（本处最近一次替换）而不是 replacement（可能很旧）：
+      // 旧结局不该参与「当下状态」的判定。
+      const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (currentReplacement && currentReplacement.state === 'uncertain' && !recoveredReady))
+      const isCancelled = !recoveredReady && (Boolean(item && item.data && item.data.cancelled === true) || Boolean(currentPolledJob && currentPolledJob.state === 'cancelled') || Boolean(currentReplacement && currentReplacement.state === 'cancelled'))
       // taskState 的取值顺序很关键，这里已经排错两次：
       // ① replacement 是上一次替换留下的陈旧记录（state 早已是 ready），它若排在 item.status
       //    前面，会把「正在生成」压成「已完成」；
@@ -976,12 +993,16 @@ let openImageOverlay = null
       // 可能永远停在 pending（数据里「东翼演武场开场」正是如此：4 个作业全部 done，
       // 标记还挂着 pending），于是标签成了「排队中」，把组级的判断整个架空。
       // 组里到底还有没有活在跑，只由 groupBusy 说话。
-      const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : groupBusy ? 'running' : itemPending ? 'pending' : recoveredReady ? 'done' : String(
+      // 顺序原则：用户刚做的动作（取消）优先，其次是「当下有没有活在跑」，
+      // 最后才是「上一轮的结局」。groupBusy 必须排在 isUncertain 之前 ——
+      // 后者来自 replacement.state，可能是很多轮之前留下的 uncertain，
+      // 排在前面就会把「正在生成」盖成「状态待确认」（用户反馈：生图执行了却没有生成中提示）。
+      const taskState = isCancelled ? 'cancelled' : groupBusy ? 'running' : isUncertain ? 'uncertain' : itemPending ? 'pending' : recoveredReady ? 'done' : String(
         currentPolledJob && currentPolledJob.state
         || (item && item.status === 'failed' ? 'failed' : '')
         || 'done',
       )
-      const cancellationMayContinue = Boolean((item && item.data && item.data.cancelMayHaveContinued === true) || (replacement && (replacement.cancelMayHaveContinued === true || replacement.requestStarted === true)) || (currentPolledJob && currentPolledJob.state === 'cancelled' && currentPolledJob.requestStarted === true))
+      const cancellationMayContinue = Boolean((item && item.data && item.data.cancelMayHaveContinued === true) || (currentReplacement && (currentReplacement.cancelMayHaveContinued === true || currentReplacement.requestStarted === true)) || (currentPolledJob && currentPolledJob.state === 'cancelled' && currentPolledJob.requestStarted === true))
       const queryUnavailable = Boolean(currentPolledJob && currentPolledJob.state === 'uncertain' && currentPolledJob.backend === 'comfyui' && !currentPolledJob.comfyId)
       const statusLabel = ({ queued: '排队中', pending: '排队中', running: '生成中', processing: '生成中', done: '完成', ready: '完成', failed: '失败', cancelled: '已取消', uncertain: '状态待确认' })[taskState] || '状态待确认'
       // 顺利出图时不再挂一行文案：图本身就是结果，状态行只在需要说明时出现。
