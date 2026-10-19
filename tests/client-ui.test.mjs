@@ -176,7 +176,7 @@ test('正文内图片遇到终态失败后，手动重试会重新提交同一�
   assert.ok(ui.requests.some(request => request.path === 'jobs' && request.method === 'POST' && request.body.key === 'same-inline-key'))
 })
 
-test('失败占位支持点击、右键和长按打开提示词编辑器', async () => {
+test('失败占位支持点击和右键打开提示词编辑器；长按已移除', async () => {
   const ui = harness({ 'job-detail': () => ({ ok: true, job: { id: 'job-failed-placeholder', rawPrompt: '原提示词', state: 'failed' } }) })
   ui.renderComponent(ui.api.__test.PromptEditor)
   const props = { gameId: 'game-placeholder', turn: 11, item: { id: 'media-placeholder', textVersion: 'text-v11', status: 'failed', caption: '当前图片', error: '生成失败', data: { jobId: 'job-failed-placeholder' } } }
@@ -198,13 +198,11 @@ test('失败占位支持点击、右键和长按打开提示词编辑器', async
   await flush()
   ui.renderComponent(ui.api.__test.PromptEditor)
 
-  placeholder.props.onTouchStart()
-  const longPress = ui.timeouts.findLast(timer => timer.delay === 550)
-  assert.ok(longPress)
-  longPress.callback()
-  await flush()
-  editor = ui.renderComponent(ui.api.__test.PromptEditor)
-  assert.equal(ui.nodes(editor).find(node => node.type === 'textarea')?.props.value, '原提示词')
+  // 长按已按用户要求移除：占位符不再挂任何触摸/鼠标按下的手势，
+  // 也不会再产生那个 550ms 的长按定时器。这里把它固化成契约，避免以后又被加回来。
+  assert.equal(placeholder.props.onTouchStart, undefined)
+  assert.equal(placeholder.props.onMouseDown, undefined)
+  assert.equal(ui.timeouts.some(timer => timer.delay === 550), false)
 })
 
 test('平台可能仍在生成的取消保持重画锁，直到只读查询确认终态', async () => {

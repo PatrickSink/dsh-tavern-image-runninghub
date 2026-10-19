@@ -546,7 +546,7 @@ let openImageOverlay = null
         }
         return h('div', { style: wrapStyle },
           h('img', { ref: forcedWidthRef, key: 'img-' + imgNonce, src, loading: 'lazy', decoding: 'async', alt: plan.title || '插图',
-            onError: () => setImgError('加载失败'), title: '点一下在 DSH 里看大图', style: { display: 'block', ...imageWidthStyle({ width: '100%', maxWidth: 'min(660px, 96vw)' }, displayWidth), borderRadius: '10px', cursor: 'zoom-in', background: '#1a1d24', margin: '10px auto' }, onClick: () => viewImage(plan.jobId, plan.title), onContextMenu: (event) => { event.preventDefault(); openEditorFor(plan.jobId, plan.title) }, onMouseDown: () => beginPress(plan.jobId, plan.title), onMouseUp: cancelPress, onMouseLeave: cancelPress, onTouchStart: () => beginPress(plan.jobId, plan.title), onTouchEnd: cancelPress, onTouchMove: cancelPress }))
+            onError: () => setImgError('加载失败'), title: '点一下在 DSH 里看大图', style: { display: 'block', ...imageWidthStyle({ width: '100%', maxWidth: 'min(660px, 96vw)' }, displayWidth), borderRadius: '10px', cursor: 'zoom-in', background: '#1a1d24', margin: '10px auto' }, onClick: () => viewImage(plan.jobId, plan.title), }))
       }
       if (state === 'failed') {
         return h('div', { style: wrapStyle },
@@ -1160,20 +1160,17 @@ let openImageOverlay = null
             : '正在生成…'
       const placeholder = h('div', {
         key: 'illustration-placeholder',
-        title: '点一下或右键改提示词 / 重画',
+        title: '点一下看大图；右键直接打开参数面板',
         // 同图片：不放 margin，留白由 wrapStyle 提供（否则右下角提示会落到容器外边）
         style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '110px', maxWidth: 'min(660px, 96vw)', borderRadius: '10px', background: '#1a1d24', border: '1px dashed #2c313c', color: '#8b93a1', fontSize: '12px', cursor: 'pointer', margin: 0, userSelect: 'none' },
+        // 占位符（生成中/失败/已取消）没有图可看，点了直接进提示词编辑器改词重画。
         onClick: () => openEditorFor(displayJobId, title, displayMediaContext),
         onContextMenu: event => {
-          cancelPress()
+          // 右键同样进编辑器（长按手势已按用户要求移除）
           event.preventDefault()
           event.stopPropagation()
           openEditorFor(displayJobId, title, displayMediaContext)
         },
-        onMouseDown: event => { if (event.button === 0) beginPress(displayJobId, title, displayMediaContext) },
-        onMouseUp: cancelPress, onMouseLeave: cancelPress,
-        onTouchStart: () => beginPress(displayJobId, title, displayMediaContext),
-        onTouchEnd: cancelPress, onTouchMove: cancelPress,
       }, placeholderText)
       // TavernPluginMediaItem 会统一追加 figcaption；这里保留 alt 和预览标题即可。
       // 手机上手指出得准才行：按钮给足触控高度（38px 起），滑块在小屏上占更多宽度。
@@ -1279,19 +1276,12 @@ let openImageOverlay = null
           // 「显示大小」控制条已按用户要求去掉：它由双击（桌面）与两次快速轻点（手机）触发，
           // 而手机上连点两下太容易误触 —— 点开图片时经常莫名弹出，很打扰。
           // 组件与保存逻辑保留在下面，只是不再有入口。
+          // 右键直达参数面板；长按手势已按用户要求移除（不再有长按计时器）。
           onContextMenu: event => {
-            cancelPress()
             event.preventDefault()
             event.stopPropagation()
             openEditorFor(displayJobId, title, displayMediaContext)
           },
-          onMouseDown: event => { if (event.button === 0) beginPress(displayJobId, title, displayMediaContext) },
-          onMouseUp: cancelPress, onMouseLeave: cancelPress,
-          onTouchStart: () => beginPress(displayJobId, title, displayMediaContext),
-          // 触摸抬手只做「取消长按」这一件事。原先这里还认「两次快速轻点（≤320ms）」
-          // 去打开显示大小控制条 —— 太容易误触，已去掉（连同桌面的 onDoubleClick）。
-          onTouchEnd: () => { cancelPress() },
-          onTouchMove: cancelPress,
         }) : placeholder,
         // 状态与操作合成图片右下角的一行，不再是图片下方两个独立的框。
         // 颜色故意与正文文字区分开（琥珀色文字 + 红色取消），一眼能看出是插图的临时状态。
@@ -1512,16 +1502,6 @@ let openImageOverlay = null
       } catch (error) {
         reportHost('editor-open-failed', { message: String(error?.message ?? error).slice(0, 200) })
       }
-    }
-
-    /** 长按计时器（按住 0.55 秒算长按） */
-    let pressTimer = null
-    function beginPress(jobId, title, mediaContext) {
-      cancelPress()
-      pressTimer = setTimeout(() => { pressTimer = null; openEditorFor(jobId, title, mediaContext) }, 550)
-    }
-    function cancelPress() {
-      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null }
     }
 
     /** 显示一条浮层提示（z-index 拉满，盖在设置面板上面） */
@@ -6680,7 +6660,7 @@ function versionsOf(jobId) {
 
     exports.name = 'dsh-tavern-image'
     exports.inject = ['slots']
-    exports.apply = apply; exports.__test = Object.assign(exports.__test || {}, { OfficialImage, PromptEditor, validMediaContext, createMessageDrawRunner, setToastForTest: fn => { showToast = fn }, hasUncertainMediaAction: mediaId => isUncertainLocked(String(mediaId)) })
+    exports.apply = apply; exports.__test = Object.assign(exports.__test || {}, { OfficialImage, PromptEditor, ImageOverlay, validMediaContext, createMessageDrawRunner, setToastForTest: fn => { showToast = fn }, hasUncertainMediaAction: mediaId => isUncertainLocked(String(mediaId)) })
     return module.exports
   },
 })
