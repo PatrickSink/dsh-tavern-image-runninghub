@@ -827,10 +827,13 @@ let openImageOverlay = null
       const ownState = ownJobId && currentPolledJob && String(currentPolledJob.id) === ownJobId
         ? String(currentPolledJob.state || '')
         : ''
+      // 终态要把 ready 也算上 —— 这个插件里两套词：作业用 done，媒体项/替换记录用 ready。
+      // 只认 done 的话，一次只读的「重新查询」返回 ready 后仍会被当成「在跑」，
+      // 已完成的图会凭空挂出「取消这张图」（测试抓到的就是这个）。
       const ownPending = Boolean(ownJobId) && Boolean(ownState)
-        && !['done', 'failed', 'cancelled'].includes(ownState)
+        && !['done', 'ready', 'failed', 'cancelled'].includes(ownState)
       const groupBusy = ownPending || (groupLoaded
-        ? groupJobs.some(one => !['done', 'failed', 'cancelled'].includes(String(one.state || '')))
+        ? groupJobs.some(one => !['done', 'ready', 'failed', 'cancelled'].includes(String(one.state || '')))
         : replacementRunning)
       // 组里最新的成品 —— 自动刷新就是切到它
       const groupDone = groupJobs
@@ -870,6 +873,11 @@ let openImageOverlay = null
           taskState,
           groupCount: groupJobs.length,
           groupBusy: groupBusy ? 1 : 0,
+          groupLoaded: groupLoaded ? 1 : 0,
+          repRunning: replacementRunning ? 1 : 0,
+          ownPending: ownPending ? 1 : 0,
+          ownJob: ownJobId.slice(0, 8),
+          ownState,
           newestDone: newestDoneId.slice(0, 8),
           shown: String((cur && cur.jobId) || '').slice(0, 8),
           manual: cur && cur.manual ? 1 : 0,
