@@ -970,10 +970,14 @@ let openImageOverlay = null
         if (!replacementJobId) return false
         const mine = groupJobs.find(one => String(one.id) === replacementJobId)
         if (mine) {
-          // 它自己已经终结（done/failed/cancelled/uncertain）→ 这不是「正在发生的事」，
-          // 不该再挂提示。原先漏了这一步：取消留下的 cancelled/uncertain 记录会一直显示，
-          // 每次进正文都冒出来（用户反馈：重启一进来图片下面就有提示）。
-          if (isSettled(mine.state)) return false
+          // uncertain 要单独对待：它是「请求可能已发到平台、结果未知」，
+          // 属于「等用户决定的事」，不是过去式。作业在平台侧往往已经是 cancelled/failed，
+          // 若按「已终结就不算当前」把它判掉，正文里连提示和按钮都不会出现 ——
+          // 用户既生不了图、又找不到「重新查询」，彻底卡死（用户反馈）。
+          const markedUncertain = String((replacement && replacement.state) || '') === 'uncertain'
+            || String(mine.state || '') === 'uncertain'
+          if (!markedUncertain && isSettled(mine.state)) return false
+          if (markedUncertain) return true
           return !groupJobs.some(one => Number(one.createdAt || 0) > Number(mine.createdAt || 0))
         }
         // 组列表还没回来时怎么判？关键在有没有提交时间：
@@ -992,7 +996,12 @@ let openImageOverlay = null
       const currentReplacement = replacementIsCurrent ? replacement : null
       // 注意这三处都用 currentReplacement（本处最近一次替换）而不是 replacement（可能很旧）：
       // 旧结局不该参与「当下状态」的判定。
-      const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (currentReplacement && currentReplacement.state === 'uncertain' && !recoveredReady))
+      // 最后一条件很关键：待确认锁是模块级的、跨组件共享，
+      // 查看器里点重绘被后端拒绝时（start() 抛 UNCERTAIN），那边会上锁，
+      // 这里随之把这一处判成「待确认」。否则正文只拿着旧的 props（Tavern 不会因为
+      // 我们改了数据就重发 props），看不出这一处已经卡住，也就不会显示出口按钮 ——
+      // 用户看到的就是「提示说去点重新查询，但正文里根本没有那个按钮」。
+      const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (currentReplacement && currentReplacement.state === 'uncertain' && !recoveredReady) || (mediaContext && mediaContext.mediaId && isUncertainLocked(mediaContext.mediaId)))
       const isCancelled = !recoveredReady && (Boolean(item && item.data && item.data.cancelled === true) || Boolean(currentPolledJob && currentPolledJob.state === 'cancelled') || Boolean(currentReplacement && currentReplacement.state === 'cancelled'))
       // taskState 的取值顺序很关键，这里已经排错两次：
       // ① replacement 是上一次替换留下的陈旧记录（state 早已是 ready），它若排在 item.status
@@ -1327,6 +1336,13 @@ let openImageOverlay = null
           validMediaContext(mediaContext) && !queryUnavailable && taskState === 'uncertain'
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
+          // 「放弃这次结果」—— uncertain 状态下的第二个出口。
+          // 只有「重新查询」是不够的：一旦平台那边查不到、或用户不想再等，
+          // 这一处就永久卡住（生图被拒、又没有别的入口）。这个按钮让用户自己决定
+          // 不再追究这次未确认的请求，之后可以正常重新生成。
+          validMediaContext(mediaContext) && !actionBusy && taskState === 'uncertain'
+            ? h('button', { type: 'button', onClick: () => mediaAction('dismiss'), disabled: actionBusy,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '放弃这次结果') : null,
           // 取消后（本地已停、平台可能仍在跑）给两个出口，缺一不可：
           //   ① 重新查询 —— 只读确认终态，顺带解开重画锁；没有它，这一处之后就没法再重画了。
           //   ② 关闭     —— 纯收起这条提示（用户要求），不去动后端状态。
