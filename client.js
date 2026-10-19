@@ -2869,7 +2869,24 @@ function versionsOf(jobId) {
                   } catch (error) { warn('修复重画版本链失败：' + String(error && error.message || error)) }
                   setMediaJobOverride(String(view.mediaId || ''), String(d.replacement || ''))
                   if (typeof showToast === 'function') showToast('已删除这张图片')
-                  openImageOverlay({ open: false, jobIds: [], note: '', working: false, index: 0, mediaId: '', gameId: '' })
+                  // 删除之后留在查看器里继续翻，不要直接弹回正文（用户要求）：
+                  //   ① 优先选中左边那张；
+                  //   ② 左边没有（删的就是第一张）→ 选右边那张（删掉后它顶到同一位置）；
+                  //   ③ 左右都没有 → 才回到正文，这一处不再有图。
+                  const goneId = String(shownId || '')
+                  const oldIds = Array.isArray(view.jobIds) ? view.jobIds.slice() : []
+                  const oldAt = Math.max(0, Number(view.index) || 0)
+                  const keptIds = oldIds.filter(one => String(one) !== goneId)
+                  if (!keptIds.length) {
+                    openImageOverlay({ open: false, jobIds: [], note: '', working: false, index: 0, mediaId: '', gameId: '' })
+                  } else {
+                    const nextAt = oldAt > 0 ? oldAt - 1 : 0
+                    openImageOverlay({
+                      jobIds: keptIds,
+                      index: Math.max(0, Math.min(keptIds.length - 1, nextAt)),
+                      note: '已删除这张',
+                    })
+                  }
                 } else setActionNote('删除失败：' + ((d && d.error) || '未知原因'))
               } finally { setActionBusy('') }
             },
