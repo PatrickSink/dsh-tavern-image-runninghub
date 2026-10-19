@@ -2850,6 +2850,23 @@ function versionsOf(jobId) {
                   body: JSON.stringify({ jobId: shownId }),
                 }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
                 if (d && d.ok) {
+                  // 修版本链：删掉的这个 job 可能正处在链的中间（A→B→C→D）。
+                  // 宿主那边只删作业记录，redrawnJobs 是浏览器侧的 localStorage，没人清 ——
+                  // 于是链里留下一条指向已删节点的边，versionsOf 会把它算进整条链，
+                  // 而那张图已经取不到，表现就是「删掉一张，这一处只剩一张」（用户反馈）。
+                  // 正确做法是把前驱直接接到后继上，等于从链里摘掉它。
+                  try {
+                    const gone = String(shownId || '')
+                    let prevKey = ''
+                    for (const [k, v] of redrawnJobs) { if (String(v) === gone) { prevKey = k; break } }
+                    const nextVal = redrawnJobs.get(gone)
+                    redrawnJobs.delete(gone)
+                    if (prevKey) {
+                      if (nextVal) redrawnJobs.set(prevKey, nextVal)
+                      else redrawnJobs.delete(prevKey)
+                    }
+                    persistRedraw()
+                  } catch (error) { warn('修复重画版本链失败：' + String(error && error.message || error)) }
                   setMediaJobOverride(String(view.mediaId || ''), String(d.replacement || ''))
                   if (typeof showToast === 'function') showToast('已删除这张图片')
                   openImageOverlay({ open: false, jobIds: [], note: '', working: false, index: 0, mediaId: '', gameId: '' })
