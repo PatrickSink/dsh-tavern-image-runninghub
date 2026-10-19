@@ -116,6 +116,8 @@ let openImageOverlay = null
       'apply-version-skip', 'apply-version-result', 'apply-version-threw',
       // 覆盖表写入（含监听器数量）：确认「切图后正文换图」这条链路走到了哪一步。
       'media-job-override',
+      // 状态行组合（低频，仅在变化时上报）：定位「该出现提示却没出现」。
+      'status-line',
     ])
 
     function reportFingerprint(stage, data) {
@@ -762,16 +764,16 @@ let openImageOverlay = null
       //    完成 —— recoveredReady 因此为 true，把整块状态压成「已完成」，提示照样不出现。
       //    所以「替换任务进行中」也必须在 recoveredReady 之前。
       //
-      //    但那个标记本身不可靠：它靠 media-actions 在轮询到终态时回写，一旦那条路径没跑到，
-      //    state 就永远停在 pending（数据里就有两处：作业早已 done，标记还是 pending，
-      //    结果提示再也不消失）。所以还要看它指向的作业是否已完成 ——
-      //    完成时 data.jobId 会指向它，于是两者相同即可判定这一轮替换已经落地。
-      const replacementJobId = String((replacement && replacement.jobId) || '')
-      const replacementLanded = Boolean(replacementJobId)
-        && String((item && item.data && item.data.jobId) || '') === replacementJobId
+      //    标记本身可能因为宿主重启而永远停在 pending：替换任务放在内存的 tasks 里，
+      //    重启后没人再回写终态（数据里就有两处这样挂着）。
+      //    注意不能用「data.jobId === replacement.jobId」当完成判据 —— 用户在生成中切图时，
+      //    写回会把 data.jobId 改成他选的那张，碰巧与 replacement.jobId 相同，于是被误判成
+      //    已完成、提示消失（上一版就是这么错的）。改用时间上限：超过 15 分钟还挂着的不再算。
+      const repStarted = Number((replacement && replacement.startedAt) || 0)
+      const repStale = repStarted > 0 && (Date.now() - repStarted) > 15 * 60 * 1000
       const replacementActive = Boolean(replacement
         && ['pending', 'running', 'queued', 'processing'].includes(String(replacement.state || '')))
-        && !replacementLanded
+        && !repStale
       const itemPending = Boolean(item && item.status === 'pending')
       const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : replacementActive ? String(replacement.state) : itemPending ? 'pending' : recoveredReady ? 'done' : String(
         currentPolledJob && currentPolledJob.state
@@ -789,6 +791,20 @@ let openImageOverlay = null
       //    凭空冒出一行「替换任务完成」，直到再次触发轮询才消失（用户反馈的问题）。
       // ② 不能带 !activeReplacement —— 替换记录在出图完成后依然存在，带上它同样会赖着不走。
       const quietStatus = ['done', 'ready'].includes(taskState) && !(item && item.status === 'failed')
+      // 低频取证：只在状态组合变化时上报一次（不是每次渲染），用来定位
+      // 「该出现提示却没出现」这类问题。稳定后可以删。
+      const statusSig = [taskState, itemPending ? 1 : 0, replacementActive ? 1 : 0, quietStatus ? 1 : 0, String(item && item.status || '')].join('|')
+      useEffect(() => {
+        reportHost('status-line', {
+          mediaId: String(item && item.id || '').slice(0, 14),
+          taskState,
+          itemPending: itemPending ? 1 : 0,
+          replacementActive: replacementActive ? 1 : 0,
+          repState: String((replacement && replacement.state) || ''),
+          itemStatus: String(item && item.status || ''),
+          quiet: quietStatus ? 1 : 0,
+        })
+      }, [statusSig])
       // 没有画面可看时（生成中／失败／已取消／待确认）也要给一块能点的占位：点一下、右键或长按
       // 都能打开提示词编辑器，改完重画。否则这些状态下页面只剩一行文字，用户没有任何出路
       //（失败后点重试、再马上取消，就会掉进这个死角）。
