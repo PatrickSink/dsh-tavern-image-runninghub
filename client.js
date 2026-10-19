@@ -816,7 +816,20 @@ let openImageOverlay = null
       async function mediaAction(operation, extra = {}) {
         const lock = mediaContext.mediaId
         const readOnlyRecovery = operation === 'recover'
-        if (actionBusy || mediaPostLocks.has(lock) || (!readOnlyRecovery && mediaUncertainActions.has(lock)) || !validMediaContext(mediaContext)) return
+        if (actionBusy || mediaPostLocks.has(lock) || (!readOnlyRecovery && mediaUncertainActions.has(lock)) || !validMediaContext(mediaContext)) {
+          // 这个早退就是「点了按钮什么也没发生」的来源（忙锁、待确认锁、上下文不完整）。
+          // 必须留痕，否则前端看起来毫无反应、后端一条记录都没有，无从判断卡在哪一条。
+          reportHost('media-op-blocked', {
+            operation,
+            reason: actionBusy ? 'busy'
+              : mediaPostLocks.has(lock) ? 'lock'
+                : (!readOnlyRecovery && mediaUncertainActions.has(lock)) ? 'uncertain-lock'
+                  : 'invalid-context',
+            valid: validMediaContext(mediaContext) ? 1 : 0,
+            busy: Boolean(actionBusy) ? 1 : 0,
+          })
+          return
+        }
         mediaPostLocks.add(lock)
         setActionBusy(true)
         try {
@@ -824,7 +837,10 @@ let openImageOverlay = null
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ operation, ...mediaContext, jobId: effectiveJobId, ...extra }),
           })
-          if (!result?.ok) throw new Error(result?.error || '请求未确认')
+          if (!result?.ok) {
+            reportHost('media-op', { operation, target: String(effectiveJobId).slice(0, 8), returned: '', state: '', ok: 0, error: String(result?.error || '请求未确认').slice(0, 60) })
+            throw new Error(result?.error || '请求未确认')
+          }
           const nextJobId = String(result.jobId || effectiveJobId)
           // 只有真正「提交新任务」的操作才更新「本次提交的作业」。
           // cancel / recover 返回的 jobId 是「被操作的那个作业」—— 若把那也记进来，
@@ -911,11 +927,17 @@ let openImageOverlay = null
       const replacementJobId = String((replacement && replacement.jobId) || '')
       const replacementIsCurrent = (() => {
         if (!replacementJobId) return false
+        const mine = groupJobs.find(one => String(one.id) === replacementJobId)
+        if (mine) {
+          // 它自己已经终结（done/failed/cancelled/uncertain）→ 这不是「正在发生的事」，
+          // 不该再挂提示。原先漏了这一步：取消留下的 cancelled/uncertain 记录会一直显示，
+          // 每次进正文都冒出来（用户反馈：重启一进来图片下面就有提示）。
+          if (isSettled(mine.state)) return false
+          return !groupJobs.some(one => Number(one.createdAt || 0) > Number(mine.createdAt || 0))
+        }
         // 组列表还没回来时保守按它算（宁可不显示提示，也不要凭空断言「已结束」）
         if (!groupJobs.length) return true
-        const mine = groupJobs.find(one => String(one.id) === replacementJobId)
-        if (!mine) return false            // 它已经不在这一组的作业列表里 → 旧记录
-        return !groupJobs.some(one => Number(one.createdAt || 0) > Number(mine.createdAt || 0))
+        return false                        // 它不在这一组的作业列表里 → 旧记录
       })()
       const currentReplacement = replacementIsCurrent ? replacement : null
       // 注意这三处都用 currentReplacement（本处最近一次替换）而不是 replacement（可能很旧）：
