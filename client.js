@@ -1828,9 +1828,11 @@ function versionsOf(jobId) {
         }
       }
 
-      async function redraw() {
+      async function redraw(options) {
+        // force：来自「直接生图」——用户已经知道上次结果没确认，仍然要求再生成一次。
+        const force = Boolean(options && options.force === true)
         const lock = String(view.mediaContext && view.mediaContext.mediaId || '')
-        if (view.mediaContext && (isPostLocked(lock) || isUncertainLocked(lock) || !validMediaContext(view.mediaContext))) {
+        if (view.mediaContext && (isPostLocked(lock) || (!force && isUncertainLocked(lock)) || !validMediaContext(view.mediaContext))) {
           // 这里以前是静默 return —— 用户点重绘什么都不发生，也没有任何解释。
           // 这是查看器里「点了没反应」的唯一来源，必须给反馈并留痕。
           const uncertainLocked = isUncertainLocked(lock)
@@ -1852,6 +1854,7 @@ function versionsOf(jobId) {
             if (!validMediaContext(view.mediaContext)) { say('当前图片上下文不完整，无法提交单图重画'); return }
             const body = { operation: 'redraw', ...view.mediaContext, jobId: view.mediaContext.jobId, prompt: view.prompt, negative: view.negative }
             if (view.channelId) body.channelId = view.channelId
+            if (force) body.force = true
             const result = await jsonFetch(BASE + '/media-action', {
               method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
             })
@@ -1946,7 +1949,7 @@ function versionsOf(jobId) {
           return
         }
         openPromptEditor({ busy: '' })
-        await redraw()
+        await redraw({ force: true })
       }
 
       const btn = (label, onClick, primary) => React.createElement('button', {
@@ -2902,7 +2905,8 @@ function versionsOf(jobId) {
               try {
                 const again = await jsonFetch(BASE + '/media-action', {
                   method: 'POST', headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ operation: 'redraw', ...ctx }),
+                  // force：用户点了「直接生图」，等于明确授权「不管上次结果、再生成一次」。
+                  body: JSON.stringify({ operation: 'redraw', ...ctx, force: true }),
                 }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
                 if (again && again.ok) {
                   noteSubmittedJob(ctx.mediaId, String(again.jobId || ctx.jobId))
