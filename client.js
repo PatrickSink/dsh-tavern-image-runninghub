@@ -772,19 +772,50 @@ let openImageOverlay = null
       //    完成 —— recoveredReady 因此为 true，把整块状态压成「已完成」，提示照样不出现。
       //    所以「替换任务进行中」也必须在 recoveredReady 之前。
       //
-      //    标记自己靠不住：它由 media-actions 在内存任务跑到终态时回写，宿主重启后那些
-      //    任务没了，标记就永远停在 pending（数据里真有两处）。
-      //    判据只看「本次会话自己提交的任务还在不在跑」—— 这完全由前端自己维护
-      //   （actionJobId / currentPolledJob），不依赖 Tavern 重新下发 props。
-      //    之前是读 item.data.replacement 的，而那份 props 提交后不会刷新，于是
-      //    「提交生图 → 回正文 → 提示一闪而过」。
-      const replacementJobId = String((replacement && replacement.jobId) || '')
-      const trackedJobId = String(activeActionJobId.current || actionJobId || '')
-      const trackedState = trackedJobId && currentPolledJob && String(currentPolledJob.id) === trackedJobId
-        ? String(currentPolledJob.state || '')
-        : ''
-      const replacementActive = Boolean(trackedJobId)
-        && ['pending', 'running', 'queued', 'processing'].includes(trackedState)
+      // ── 这一组（这一处）的作业状态：提示与自动刷新都挂在它上面 ──────────────
+      // 用户指出了关键点：提示应该与「组」绑定 —— 只要这一组里还有图在生成就显示，
+      // 跟当前正文显示的是哪一张解耦。自动显示最新那张同理，看的也是组里最新的成品。
+      // 所以按 groupId 轮询这一组（/history 已支持按 groupId 精确查）。
+      // 后台任务没有推送机制，前端只能靠轮询知道它完了没；但粒度是「组」而非「某一张」，
+      // 也不会再让几套判据互相打架 —— 之前两次「闪一下就消失」都是因为把提示挂在
+      // 某一张的状态上（旧 props 不刷新，或重进查看器后跟踪丢失）。
+      const [groupJobs, setGroupJobs] = React.useState([])
+      useEffect(() => {
+        const mediaId = String(item && item.id || '')
+        if (!mediaId) return undefined
+        let live = true
+        const tick = async () => {
+          const cur = mediaJobOverride.get(mediaId)
+          const baseId = String((cur && cur.jobId) || '') || jobId
+          if (!baseId) return
+          try {
+            const first = await jsonFetch(BASE + '/history')
+            if (!live) return
+            const rows = (first && Array.isArray(first.jobs)) ? first.jobs : []
+            const self = rows.find(one => String(one && one.id) === baseId)
+            const group = String((self && self.groupId) || '')
+            let mine = []
+            if (group) {
+              const exact = await jsonFetch(BASE + '/history?groupId=' + encodeURIComponent(group))
+              if (!live) return
+              mine = (exact && Array.isArray(exact.jobs)) ? exact.jobs : []
+            }
+            setGroupJobs(mine.filter(one => one && one.id))
+          } catch { /* 轮询失败就保留上一次的数据 */ }
+        }
+        const timer = setInterval(tick, 2500)
+        tick()
+        return () => { live = false; clearInterval(timer) }
+      }, [item && item.id, jobId])
+      // 组里还有没出图、也没终结的作业 → 这一处在生成中（与正文显示哪张无关）
+      const groupBusy = groupJobs.some(one => !['done', 'failed', 'cancelled'].includes(String(one.state || '')))
+      // 组里最新的成品 —— 自动刷新就是切到它
+      const groupDone = groupJobs
+        .filter(one => one.byteLength && String(one.state || '') === 'done')
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+      const newestDoneId = groupDone.length ? String(groupDone[groupDone.length - 1].id || '') : ''
+      // 提示只看「这一组还有没有在跑」，不再依赖本次会话跟踪了哪个任务
+      const replacementActive = groupBusy
       const itemPending = Boolean(item && item.status === 'pending')
       const taskState = isCancelled ? 'cancelled' : isUncertain ? 'uncertain' : replacementActive ? String(replacement.state) : itemPending ? 'pending' : recoveredReady ? 'done' : String(
         currentPolledJob && currentPolledJob.state
@@ -820,20 +851,18 @@ let openImageOverlay = null
       // 都能打开提示词编辑器，改完重画。否则这些状态下页面只剩一行文字，用户没有任何出路
       //（失败后点重试、再马上取消，就会掉进这个死角）。
       //
-      // 「这一处出了新图就自动跟随」以及「override 指向的图被删了就清掉」。
-      // ① 新图生成完 → 正文直接显示最新的那张。
-      //    不扫全库：这个任务是自己提交的，作业号就在 tracked 上，等它到终态就切过去。
-      //    这就是用户要的「新生成图片，直接刷新显示最新的那张」。
+      // ① 新图生成完 → 正文直接刷新显示最新那张（用户要的第一种）。
+      //    判据取自组级状态：组里 createdAt 最大的那张成品。
+      //    用户手动切换过（override.manual）时，只有在他选完之后确实又出了更新的一张才跟随，
+      //    否则会把他刚在查看器里选好的那张立刻改回最新 —— 那就是「切换哪张显示哪张」失效的原因。
       useEffect(() => {
         const mediaId = String(item && item.id || '')
-        const doneId = String(activeActionJobId.current || actionJobId || '')
-        if (!mediaId || !doneId) return
-        if (!currentPolledJob || String(currentPolledJob.id) !== doneId) return
-        if (!['done', 'ready'].includes(String(currentPolledJob.state || ''))) return
+        if (!mediaId || !newestDoneId || !groupDone.length) return
         const cur = mediaJobOverride.get(mediaId)
-        if (String((cur && cur.jobId) || '') === doneId) return
-        setMediaJobOverride(mediaId, doneId)
-      }, [currentPolledJob, actionJobId, item && item.id])
+        if (String((cur && cur.jobId) || '') === newestDoneId) return
+        if (cur && cur.manual && Number(groupDone[groupDone.length - 1].createdAt || 0) <= Number(cur.at || 0)) return
+        setMediaJobOverride(mediaId, newestDoneId)
+      }, [newestDoneId, item && item.id])
       const showImage = Boolean(src) && (!imgError || imgRetry < 20)
       const placeholderText = taskState === 'failed' ? '配图失败 · 点这里改提示词重画'
         : taskState === 'cancelled' ? '这张图已取消 · 点这里改提示词重画'
