@@ -769,6 +769,7 @@ let openImageOverlay = null
       //
       // 注意必须限定在同一组内：一个正文位置对应一个组，取消只能取消这一处的任务。
       // groupJobs 就是按本处 groupId 拉回来的作业列表，用它取「最新提交」最准，也不会跨组。
+      // 组列表里的最新（轮询而来，可能滞后）—— 作为登记的兜底
       const groupNewestId = (() => {
         let best = null
         for (const one of groupJobs) {
@@ -783,7 +784,12 @@ let openImageOverlay = null
         if (Date.now() - Number(hit.at || 0) > SUBMITTED_UNKNOWN_MS) return ''
         return String(hit.jobId || '')
       })()
-      const effectiveJobId = String(actionJobId || groupNewestId || recentSubmittedId || activeJobId)
+      // 顺序：本地登记的「刚提交的那个」必须排在组列表前面。
+      // 组列表来自 /history 轮询，最多滞后 2.5 秒 —— 刚点完生图时新作业还没进去，
+      // groupNewestId 会取到上一次的那个作业，于是取消打到旧作业上，
+      // 表现就是「先报 pending，然后说已完成，而实际那张根本没被取消」。
+      // 登记是实时的，且带 90 秒时限，只可能是「刚提交的那一个」。
+      const effectiveJobId = String(actionJobId || recentSubmittedId || groupNewestId || activeJobId)
 
       // Poll only this media item's active job. GET is safe to retry; paid POSTs below are single-flight.
       useEffect(() => {
