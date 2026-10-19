@@ -1191,6 +1191,10 @@ let openImageOverlay = null
       }
       // 点状态行「就近」弹全文
       const [statusPeek, setStatusPeek] = React.useState(null)
+      // 这一处被「待确认锁」锁住时，取消/重试按下去必然被 mediaAction 的守卫挡下 ——
+      // 用户看到的却是「点了完全没反应」（查询结束后按钮又会重新冒出来，因为 actionBusy 已归零）。
+      // 所以干脆不显示它们；这时该做的是点「重新查询状态」确认一下。
+      const actionLocked = Boolean(mediaContext && mediaContext.mediaId) && isUncertainLocked(mediaContext.mediaId)
       const showStatusRow = !quietStatus && !statusClosed
       return h('div', { style: wrapStyle },
         widthBarOpen ? h('div', {
@@ -1267,7 +1271,10 @@ let openImageOverlay = null
             overflow: 'hidden', textOverflow: 'ellipsis',
             padding: '4px 12px', borderRadius: '999px',
             background: 'rgba(16,19,26,.78)', backdropFilter: 'blur(4px)',
-            color: '#e2b93b', fontSize: '12px', lineHeight: 1.6, textAlign: 'right',
+            // 行高不再写在容器上：容器只负责「一行、垂直居中」，
+            // 具体行高交给文字与按钮各自统一，否则文字那格会比按钮高一点，
+            // 视觉上就是「左边（状态文字）偏高」（用户反馈）。
+            color: '#e2b93b', fontSize: '12px', lineHeight: 1,
           },
           role: 'status', 'aria-live': 'polite',
           onClick: event => event.stopPropagation(),
@@ -1279,16 +1286,18 @@ let openImageOverlay = null
           h('span', {
             key: 'illustration-status-text',
             title: statusFullText,
-            style: { minWidth: 0, overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap', cursor: 'pointer', scrollbarWidth: 'none' },
+            // 用 flex 居中而不是靠基线：这格带 overflowX 滚动，会自成一个排版上下文，
+            // 行高与按钮不一致时就会整体偏移。
+            style: { minWidth: 0, display: 'flex', alignItems: 'center', lineHeight: '18px', overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap', cursor: 'pointer', scrollbarWidth: 'none' },
             onClick: event => {
               event.stopPropagation()
               setStatusPeek({ text: statusFullText, x: Number(event.clientX || 0), y: Number(event.clientY || 0) })
             },
           }, statusFullText),
-          validMediaContext(mediaContext) && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
+          validMediaContext(mediaContext) && !actionLocked && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
             ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
-          validMediaContext(mediaContext) && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
+          validMediaContext(mediaContext) && !actionLocked && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
             ? h('button', { type: 'button', onClick: () => mediaAction('retry'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
           // 「重新查询」只对「待确认」有意义 —— 那是去平台把已经产出的结果找回来
