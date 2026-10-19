@@ -961,7 +961,9 @@ let openImageOverlay = null
       }, [groupLoaded, groupJobs.length, item && item.id])
       // 低频取证：只在状态组合变化时上报一次（不是每次渲染），用来定位
       // 「该出现提示却没出现」「新图没自动刷新」这类问题。稳定后可以删。
-      const statusSig = [taskState, groupLoaded ? 1 : 0, groupJobs.length, groupBusy ? 1 : 0, newestDoneId.slice(0, 8), String(item && item.status || '')].join('|')
+      // ownPending 必须进 sig：它变了就意味着「刚提交/刚结束」，是提示最该立即反映的时刻。
+      // 之前漏了它，于是提交后若 groupBusy 恰好没变，sig 不变 -> 组件不重渲染 -> 看不到提示。
+      const statusSig = [taskState, groupLoaded ? 1 : 0, groupJobs.length, groupBusy ? 1 : 0, ownPending ? 1 : 0, newestDoneId.slice(0, 8), String(item && item.status || '')].join('|')
       useEffect(() => {
         const mid = String(item && item.id || '')
         const cur = mediaJobOverride.get(mid)
@@ -975,6 +977,11 @@ let openImageOverlay = null
           ownPending: ownPending ? 1 : 0,
           ownJob: ownJobId.slice(0, 8),
           ownState,
+          // key 对照：确认「登记时写的 mediaId」与「读取时用的 item.id」是不是同一个字符串。
+          // 这两个只要差一点，submittedJobOf 就查不到，提示自然出不来。
+          midLen: mid.length,
+          midHead: mid.slice(0, 22),
+          subKeys: [...submittedJobs.keys()].map(k => k.slice(0, 22)).join('|'),
           newestDone: newestDoneId.slice(0, 8),
           shown: String((cur && cur.jobId) || '').slice(0, 8),
           manual: cur && cur.manual ? 1 : 0,
