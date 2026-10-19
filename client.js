@@ -1180,12 +1180,25 @@ let openImageOverlay = null
       const barBtn = { padding: '8px 14px', minHeight: '38px', fontSize: '12px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'transparent', color: '#dbe3ee', cursor: 'pointer' }
       // 状态行文案抽成变量：span 上要挂「点击看全文」，onClick 里得能拿到完整文本。
       // 这些说明性的文字（尤其取消后那条）比一行长得多，窄屏上原先被 ellipsis 截掉、看不全。
-      const statusFullText = taskState === 'uncertain' ? (queryUnavailable
-        ? '状态待确认：旧作业没有保存 ComfyUI 任务号，无法查询找回；若 ComfyUI 未收到任务，请从正文末重新生图。'
-        : '状态待确认：任务号 ' + effectiveJobId + (currentPolledJob?.comfyId ? '（ComfyUI ' + String(currentPolledJob.comfyId) + '）' : currentPolledJob?.providerTaskId ? '（平台任务 ' + String(currentPolledJob.providerTaskId) + '）' : '') + '；请到生图平台检查，暂不自动重试。')
-        : taskState === 'cancelled' && cancellationMayContinue ? '已停止本地等待，但平台请求可能已发出并继续生成；请到生图平台检查用量。' + (replacement?.error ? ' ' + String(replacement.error).slice(0, 140) : '')
-          : taskState === 'cancelled' ? '已取消'
-            : item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel
+      // 正文右下角只表达「这一刻在做什么」，不再承载任何说明性长文案。
+      // 用户的要求：外部只保留「生成中」和取消，再补一个「查询中」。
+      // 待确认、已取消、失败原因这些，连同它们的出口按钮，全部放进查看器
+      //（点开图就能看到「重新查询」「直接生图」），正文保持干净。
+      const generating = ['pending', 'running', 'queued', 'processing'].includes(taskState)
+      const querying = !generating && Boolean(actionBusy)
+      // 正常路径上的文字尽量短：「生成中」「查询中」就够了 ——
+      // 以前这里在生成中也会堆一句解释，用户看不出重点。
+      // 但「待确认 / 取消 / 失败」这几种不能一味求短：它们要带平台任务号、
+      // 要说明「平台可能已经扣费」，那是用户做判断的依据，删掉就成了有提示没信息。
+      // 这些状态的详细处理按钮也在查看器里（点开图就有「重新查询」「直接生图」）。
+      const statusFullText = generating ? '生成中'
+        : querying ? '查询中'
+          : taskState === 'uncertain' ? (queryUnavailable
+            ? '状态待确认：旧作业没有保存 ComfyUI 任务号，无法查询找回；若 ComfyUI 未收到任务，请从正文末重新生图。'
+            : '状态待确认：任务号 ' + effectiveJobId + (currentPolledJob?.comfyId ? '（ComfyUI ' + String(currentPolledJob.comfyId) + '）' : currentPolledJob?.providerTaskId ? '（平台任务 ' + String(currentPolledJob.providerTaskId) + '）' : '') + '；请到生图平台检查，暂不自动重试。')
+            : taskState === 'cancelled' && cancellationMayContinue ? '已停止本地等待，但平台请求可能已发出并继续生成；请到生图平台检查用量。' + (replacement?.error ? ' ' + String(replacement.error).slice(0, 140) : '')
+              : taskState === 'cancelled' ? '已取消'
+                : item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel
       // 提示行是告知性的：用户看完可以关掉，只影响本地显示，不去动后端状态。
       // 「关掉」必须跨刷新生效（用户反馈：关闭之后刷新又冒出来）—— 所以记在 localStorage 里，
       // 并且按「这条提示的原文」记：内容变了（新一轮任务、新的错误）就该重新出现，
@@ -1332,20 +1345,12 @@ let openImageOverlay = null
           validMediaContext(mediaContext) && !actionLocked && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
             ? h('button', { type: 'button', onClick: () => mediaAction('retry'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
-          // 「重新查询」只对「待确认」有意义 —— 那是去平台把已经产出的结果找回来
           validMediaContext(mediaContext) && !queryUnavailable && taskState === 'uncertain'
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
-          // 「放弃这次结果」—— uncertain 状态下的第二个出口。
-          // 只有「重新查询」是不够的：一旦平台那边查不到、或用户不想再等，
-          // 这一处就永久卡住（生图被拒、又没有别的入口）。这个按钮让用户自己决定
-          // 不再追究这次未确认的请求，之后可以正常重新生成。
           validMediaContext(mediaContext) && !actionBusy && taskState === 'uncertain'
             ? h('button', { type: 'button', onClick: () => mediaAction('dismiss'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '放弃这次结果') : null,
-          // 取消后（本地已停、平台可能仍在跑）给两个出口，缺一不可：
-          //   ① 重新查询 —— 只读确认终态，顺带解开重画锁；没有它，这一处之后就没法再重画了。
-          //   ② 关闭     —— 纯收起这条提示（用户要求），不去动后端状态。
           validMediaContext(mediaContext) && !queryUnavailable && taskState === 'cancelled' && cancellationMayContinue
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.5', padding: '1px 0', background: 'none', border: 'none', color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
@@ -1892,6 +1897,44 @@ function versionsOf(jobId) {
         borderRadius: '10px', padding: '10px 12px', fontSize: '13px', lineHeight: '1.5',
         fontFamily: 'inherit', resize: 'vertical',
       }
+      // ── 待确认状态的两个出口（用户要求：就放在那句失败提示后面）────────────
+      // 正文右下角已经不再承载任何说明与按钮，所以这里是唯一的操作入口。
+      // 「重新查询」去平台确认这次请求到底成没成；「直接生图」则认定不再追究，
+      // 清掉阻塞标记后立刻提交一次新的重画（费用风险由用户自己承担，按钮语义已写明）。
+      async function resolveUncertain() {
+        if (!view.mediaContext) return
+        openPromptEditor({ busy: 'recover', note: '正在向平台确认…' })
+        try {
+          const r = await jsonFetch(BASE + '/media-action', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ operation: 'recover', ...view.mediaContext, jobId: view.mediaContext.jobId }),
+          })
+          if (!r?.ok) { say('查询未成功：' + (r?.error || '请求未确认')); return }
+          const map = { done: '已找回这张图', ready: '已找回这张图', pending: '已重新查询，任务仍在处理中', running: '已重新查询，任务仍在处理中', failed: '已确认失败', cancelled: '已确认已取消', uncertain: '状态仍待确认，可点「直接生图」继续' }
+          openPromptEditor({ busy: '', note: map[String(r.state || '')] || ('已重新查询：' + String(r.state || '')) })
+        } catch (error) {
+          say('查询未成功：' + String(error?.message ?? error))
+        }
+      }
+
+      async function dismissThenRedraw() {
+        if (!view.mediaContext) return
+        openPromptEditor({ busy: 'dismiss', note: '正在清除上次未确认的记录…' })
+        try {
+          const r = await jsonFetch(BASE + '/media-action', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ operation: 'dismiss', ...view.mediaContext, jobId: view.mediaContext.jobId }),
+          })
+          if (!r?.ok) { say('未能清除：' + (r?.error || '请求未确认')); return }
+          unlockUncertain(String(view.mediaContext.mediaId || ''))
+        } catch (error) {
+          say('未能清除：' + String(error?.message ?? error))
+          return
+        }
+        openPromptEditor({ busy: '' })
+        await redraw()
+      }
+
       const btn = (label, onClick, primary) => React.createElement('button', {
         type: 'button', onClick, disabled: Boolean(view.busy || view.submitted || view.uncertain) || Boolean(view.mediaContext && isUncertainLocked(String(view.mediaContext.mediaId || ''))),
         style: {
@@ -1951,6 +1994,30 @@ function versionsOf(jobId) {
           btn(view.busy === 'redraw' ? '🎨 提交中…' : '🎨 用这段重画', redraw, true),
           view.note ? React.createElement('span', { style: { fontSize: '12px', color: '#9aa3b2' } }, view.note) : null,
         ),
+        // 待确认时，在那句失败提示下面直接给出两个按钮。
+        // 正文那边已经不显示这些说明和出口了（用户要求只保留「生成中/查询中 + 取消」），
+        // 所以必须在这里能一步处理掉，否则又回到「有提示、没入口」的死路。
+        (view.uncertain || (view.mediaContext && isUncertainLocked(String(view.mediaContext.mediaId || ''))))
+          && view.mediaContext
+          ? React.createElement('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', marginTop: '10px', flexWrap: 'wrap' } },
+              React.createElement('button', {
+                type: 'button', onClick: resolveUncertain, disabled: Boolean(view.busy),
+                style: {
+                  padding: '6px 16px', fontSize: '13px', borderRadius: '9px',
+                  cursor: view.busy ? 'default' : 'pointer',
+                  border: '1px solid rgba(120,140,170,.45)', background: 'transparent', color: '#dbe3ee',
+                },
+              }, view.busy === 'recover' ? '🔄 查询中…' : '🔄 重新查询'),
+              React.createElement('button', {
+                type: 'button', onClick: dismissThenRedraw, disabled: Boolean(view.busy),
+                style: {
+                  padding: '6px 16px', fontSize: '13px', borderRadius: '9px',
+                  cursor: view.busy ? 'default' : 'pointer',
+                  border: '1px solid rgba(106,168,255,.6)', background: 'rgba(106,168,255,.18)', color: '#dbe3ee',
+                },
+              }, view.busy === 'dismiss' ? '🎨 提交中…' : '🎨 直接生图'),
+            )
+          : null,
         React.createElement('div', { style: { fontSize: '11px', color: '#6b7480', marginTop: '14px' } }, '提示：改完提示词点「用这段重画」，会在同一条消息里换成新图。'),
       ))
     }
