@@ -2017,7 +2017,9 @@ function versionsOf(jobId) {
         // 不再强制要求 view.mediaContext：从历史图库/旧接口打开时它可能是空的，
         // 但「上一次结果未知」这件事照样要给出出口（否则又是「有提示、没按钮」）。
         // 真到缺少上下文时，点击会明确告诉用户从正文点这张图再操作。
-        (view.uncertain || isUncertainLocked(String(view.mediaContext && view.mediaContext.mediaId || view.mediaId || '')))
+        // 同样只认「本次刚被拒」：redraw 失败时才会 openPromptEditor({uncertain: true})。
+        // 不再用待确认锁兜底 —— 那会让残留标记把按钮变成常驻（用户要求正常不显示）。
+        view.uncertain
           ? React.createElement('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', marginTop: '10px', flexWrap: 'wrap' } },
               React.createElement('button', {
                 type: 'button', onClick: resolveUncertain, disabled: Boolean(view.busy),
@@ -2856,12 +2858,11 @@ function versionsOf(jobId) {
         actionNote ? React.createElement('div', { style: { flex: '0 0 auto', order: 4, color: '#9aa3b2', fontSize: '12px', textAlign: 'center', padding: '0 14px 8px' } }, actionNote) : null,
         // 待确认时在那句失败提示下面直接给两个出口（用户要求）。
         // 这里能拿到完整上下文（gameId/mediaId/textVersion/turn），两个动作都能真正执行。
-        // 三个来源任一成立就出按钮：
-        //   ① 本次会话里刚被拒（actionUncertain）；
-        //   ② 那句失败提示还在（文本兜底，防止 state 未及时置位）；
-        //   ③ 这一处被「待确认锁」锁着 —— 关掉查看大图再打开时组件 state 会重置，
-        //      只靠 ①② 就又会变回「有提示、没按钮」。锁是模块级的，跨开关存活。
-        (actionUncertain || /重画失败|未确认|待确认/.test(String(actionNote || '')) || isUncertainLocked(String(view.mediaId || ''))) ? React.createElement('div', {
+        // 只认「本次刚被拒」：取消生图 → 再点生图 → 后端说上一轮结果未确认，
+        // 这时才需要给出这两个出口。平时（正常看图、正常出图）不该常驻。
+        // 之前为了防 state 丢失加过「锁兜底」和「文本兜底」，副作用是只要有残留标记
+        // 就会一直显示 —— 用户明确要求：正常不显示（用户反馈）。
+        actionUncertain ? React.createElement('div', {
           // order 必须和 actionNote(4) 区分开：同层里两个 order:4 的排列不确定，
           // 被挤到参数面板后面就看不见了（用户反馈「点了生图没有出现按钮」）。
           style: { flex: '0 0 auto', order: 5, display: 'flex', gap: '10px', justifyContent: 'center', alignItems: 'center', padding: '0 16px 10px', boxSizing: 'border-box' },
