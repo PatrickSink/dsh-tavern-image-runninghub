@@ -968,6 +968,9 @@ let openImageOverlay = null
             // 宁可整行短一点、也不要折成两行；文字过长时省略而不是把它挤到下一行。
             display: 'flex', alignItems: 'center', flexWrap: 'nowrap', justifyContent: 'flex-end',
             gap: '8px', maxWidth: 'calc(100% - 20px)',
+            // overflow: hidden 有两个作用：① 内容再长也被约束在胶囊里，不会溢出图片边界
+            //（溢出会看起来像「压着图片下边框」）；② 配合 nowrap 让文字省略而不是折行。
+            overflow: 'hidden', textOverflow: 'ellipsis',
             padding: '4px 12px', borderRadius: '999px',
             background: 'rgba(16,19,26,.78)', backdropFilter: 'blur(4px)',
             color: '#e2b93b', fontSize: '12px', lineHeight: 1.6, textAlign: 'right', whiteSpace: 'nowrap',
