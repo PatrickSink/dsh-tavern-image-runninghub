@@ -789,12 +789,17 @@ let openImageOverlay = null
         if (Date.now() - Number(hit.at || 0) > SUBMITTED_UNKNOWN_MS) return ''
         return String(hit.jobId || '')
       })()
-      // 顺序：本地登记的「刚提交的那个」必须排在组列表前面。
+      // 顺序：本地登记的「刚提交的那个」必须排在**所有**别的来源前面。
+      // actionJobId 是本次会话跟踪的目标，但它可能是上一轮操作的残留
+      //（那次被取消、或用户切过图）—— 让它优先，重查/取消就会打到上一个作业上，
+      // 用户看到的正是「重查没反应、或查到无关结果」（诊断里 recover target=c8233d2a
+      // 而实际上一个作业才是 b15e3864）。登记带 90 秒时限，最能代表「我刚提交的」。
+
       // 组列表来自 /history 轮询，最多滞后 2.5 秒 —— 刚点完生图时新作业还没进去，
       // groupNewestId 会取到上一次的那个作业，于是取消打到旧作业上，
       // 表现就是「先报 pending，然后说已完成，而实际那张根本没被取消」。
       // 登记是实时的，且带 90 秒时限，只可能是「刚提交的那一个」。
-      const effectiveJobId = String(actionJobId || recentSubmittedId || groupNewestId || activeJobId)
+      const effectiveJobId = String(recentSubmittedId || actionJobId || groupNewestId || activeJobId)
 
       // Poll only this media item's active job. GET is safe to retry; paid POSTs below are single-flight.
       useEffect(() => {
