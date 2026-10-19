@@ -236,9 +236,21 @@ let openImageOverlay = null
       return 'k' + (a >>> 0).toString(36)
     }
 
-    // 单次请求，不做任何兜底
+    // 单次请求，不做任何兜底 —— 但必须有超时。
+    // 请求一直不返回时 await 永不结算，调用方的 finally 也就永远不执行：
+    // mediaAction 里那把 mediaPostLocks 锁会永久留着，之后这一处的生图/取消/查询
+    // 全部被守卫挡下，界面看起来就是「彻底卡住、点什么都没反应」（用户反馈的正是这个）。
+    const REQUEST_TIMEOUT_MS = 90000
     function jsonFetchOnce(url, init) {
-      return fetch(url, init).then(async response => {
+      const options = { ...(init || {}) }
+      let timer = null
+      if (typeof AbortController === 'function' && !options.signal) {
+        const controller = new AbortController()
+        options.signal = controller.signal
+        timer = setTimeout(() => { try { controller.abort() } catch { /* 已经结束 */ } }, REQUEST_TIMEOUT_MS)
+      }
+      const done = () => { if (timer) { clearTimeout(timer); timer = null } }
+      return fetch(url, options).then(async response => {
         let data = null
         try { data = await response.json() } catch { data = null }
         if (!response.ok || (data && data.ok === false)) {
@@ -248,7 +260,7 @@ let openImageOverlay = null
           })
         }
         return data
-      })
+      }).finally(done)
     }
 
     /**
@@ -835,13 +847,13 @@ let openImageOverlay = null
       async function mediaAction(operation, extra = {}) {
         const lock = mediaContext.mediaId
         const readOnlyRecovery = operation === 'recover'
-        if (actionBusy || mediaPostLocks.has(lock) || (!readOnlyRecovery && isUncertainLocked(lock)) || !validMediaContext(mediaContext)) {
+        if (actionBusy || isPostLocked(lock) || (!readOnlyRecovery && isUncertainLocked(lock)) || !validMediaContext(mediaContext)) {
           // 这个早退就是「点了按钮什么也没发生」的来源（忙锁、待确认锁、上下文不完整）。
           // 必须留痕，否则前端看起来毫无反应、后端一条记录都没有，无从判断卡在哪一条。
           reportHost('media-op-blocked', {
             operation,
             reason: actionBusy ? 'busy'
-              : mediaPostLocks.has(lock) ? 'lock'
+              : isPostLocked(lock) ? 'lock'
                 : (!readOnlyRecovery && isUncertainLocked(lock)) ? 'uncertain-lock'
                   : 'invalid-context',
             valid: validMediaContext(mediaContext) ? 1 : 0,
@@ -849,7 +861,7 @@ let openImageOverlay = null
           })
           return
         }
-        mediaPostLocks.add(lock)
+        lockPost(lock)
         setActionBusy(true)
         try {
           const result = await jsonFetch(BASE + '/media-action', {
@@ -902,7 +914,7 @@ let openImageOverlay = null
           // Network errors are ambiguous: never repeat a possibly accepted paid request.
           if (!readOnlyRecovery) lockUncertain(lock)
           setPolledJob({ ...(polledJob || {}), state: 'uncertain', error: String(error?.message || error), id: effectiveJobId })
-        } finally { mediaPostLocks.delete(lock); setActionBusy(false) }
+        } finally { unlockPost(lock); setActionBusy(false) }
       }
 
       // 取图失败自动重试：宿主报 ready 之后文件可能还在写，这段窗口会 404
@@ -1194,6 +1206,13 @@ let openImageOverlay = null
       // 这一处被「待确认锁」锁住时，取消/重试按下去必然被 mediaAction 的守卫挡下 ——
       // 用户看到的却是「点了完全没反应」（查询结束后按钮又会重新冒出来，因为 actionBusy 已归零）。
       // 所以干脆不显示它们；这时该做的是点「重新查询状态」确认一下。
+      // actionBusy 是组件 state，只有 finally 会把它复位。请求卡住时 finally 跑不到，
+      // 界面就僵在「忙」的状态上，点任何按钮都被守卫挡下。给一个兜底复位。
+      useEffect(() => {
+        if (!actionBusy) return undefined
+        const timer = setTimeout(() => setActionBusy(false), 120000)
+        return () => clearTimeout(timer)
+      }, [actionBusy])
       const actionLocked = Boolean(mediaContext && mediaContext.mediaId) && isUncertainLocked(mediaContext.mediaId)
       const showStatusRow = !quietStatus && !statusClosed
       return h('div', { style: wrapStyle },
@@ -1288,7 +1307,10 @@ let openImageOverlay = null
             title: statusFullText,
             // 用 flex 居中而不是靠基线：这格带 overflowX 滚动，会自成一个排版上下文，
             // 行高与按钮不一致时就会整体偏移。
-            style: { minWidth: 0, display: 'flex', alignItems: 'center', lineHeight: '18px', overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap', cursor: 'pointer', scrollbarWidth: 'none' },
+            // 固定成 20px 的行盒：按钮也是 20px，两者在同一行里严格等高，
+            // 不会再出现「左边（文字）偏高」。overflowX 的滚动容器如果高度由内容决定，
+            // 它和按钮的行盒就不一样高，flex 居中之后基线仍会错开。
+            style: { minWidth: 0, display: 'block', height: '20px', lineHeight: '20px', overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap', cursor: 'pointer', scrollbarWidth: 'none' },
             onClick: event => {
               event.stopPropagation()
               setStatusPeek({ text: statusFullText, x: Number(event.clientX || 0), y: Number(event.clientY || 0) })
@@ -1296,23 +1318,23 @@ let openImageOverlay = null
           }, statusFullText),
           validMediaContext(mediaContext) && !actionLocked && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
             ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
           validMediaContext(mediaContext) && !actionLocked && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
             ? h('button', { type: 'button', onClick: () => mediaAction('retry'), disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
           // 「重新查询」只对「待确认」有意义 —— 那是去平台把已经产出的结果找回来
           validMediaContext(mediaContext) && !queryUnavailable && taskState === 'uncertain'
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
           // 取消后（本地已停、平台可能仍在跑）给两个出口，缺一不可：
           //   ① 重新查询 —— 只读确认终态，顺带解开重画锁；没有它，这一处之后就没法再重画了。
           //   ② 关闭     —— 纯收起这条提示（用户要求），不去动后端状态。
           validMediaContext(mediaContext) && !queryUnavailable && taskState === 'cancelled' && cancellationMayContinue
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
           validMediaContext(mediaContext) && taskState === 'cancelled' && cancellationMayContinue
             ? h('button', { type: 'button', onClick: closeStatusRow, disabled: actionBusy,
-                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '关闭') : null,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', display: 'block', height: '20px', lineHeight: '20px', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '关闭') : null,
         ) : null,
         ),
         imgError ? h('div', { style: noteStyle }, imgRetry >= 20 ? '图取不到（' + imgError + '）　' : '正在取回…（第 ' + imgRetry + ' 次）', imgRetry >= 20 ? h('button', { type: 'button', onClick: () => { setImgError(''); setImgRetry(0); setImgNonce(x => x + 1) } }, '重新读取') : null) : null,
@@ -1344,7 +1366,22 @@ let openImageOverlay = null
     function validMediaContext(context) {
       return Boolean(context && context.gameId && context.mediaId && context.jobId && context.textVersion && Number.isFinite(Number(context.turn)))
     }
-    const mediaPostLocks = new Set()
+    // 发送锁：媒体项 id -> 上锁时刻。用 Map 而不是 Set，是为了能兜底过期。
+    // 只要某次请求没能走到 finally（卡住、组件被卸载、宿主重启），锁就会永久留下，
+    // 这一处的生图/取消/查询从此全部被守卫挡下、什么都不发生。
+    // 给一把钥匙：超过时限自动失效，最坏情况也能自愈。
+    const mediaPostLocks = new Map()
+    const POST_LOCK_MS = 120000
+    function lockPost(mediaId) { const k = String(mediaId || ''); if (k) mediaPostLocks.set(k, Date.now()) }
+    function unlockPost(mediaId) { const k = String(mediaId || ''); if (k) mediaPostLocks.delete(k) }
+    function isPostLocked(mediaId) {
+      const k = String(mediaId || '')
+      if (!k) return false
+      const at = mediaPostLocks.get(k)
+      if (!at) return false
+      if (Date.now() - at > POST_LOCK_MS) { mediaPostLocks.delete(k); return false }
+      return true
+    }
     // 待确认锁：媒体项 id -> 上锁时刻。用 Map 而不是 Set，是为了能兜底过期。
     // 这是纯内存锁，一旦因为任何原因没被解开，表现就是「点了按钮完全没反应」——
     // 守卫会静默早退，用户看不到任何反馈，日志里也什么都没有。给一个过期时间，
@@ -1759,13 +1796,13 @@ function versionsOf(jobId) {
 
       async function redraw() {
         const lock = String(view.mediaContext && view.mediaContext.mediaId || '')
-        if (view.mediaContext && (mediaPostLocks.has(lock) || isUncertainLocked(lock) || !validMediaContext(view.mediaContext))) {
+        if (view.mediaContext && (isPostLocked(lock) || isUncertainLocked(lock) || !validMediaContext(view.mediaContext))) {
           // 这里以前是静默 return —— 用户点重绘什么都不发生，也没有任何解释。
           // 这是查看器里「点了没反应」的唯一来源，必须给反馈并留痕。
           const uncertainLocked = isUncertainLocked(lock)
           reportHost('media-op-blocked', {
             operation: 'viewer-redraw',
-            reason: mediaPostLocks.has(lock) ? 'lock' : uncertainLocked ? 'uncertain-lock' : 'invalid-context',
+            reason: isPostLocked(lock) ? 'lock' : uncertainLocked ? 'uncertain-lock' : 'invalid-context',
             valid: validMediaContext(view.mediaContext) ? 1 : 0,
             busy: 0,
           })
@@ -1774,7 +1811,7 @@ function versionsOf(jobId) {
             : !validMediaContext(view.mediaContext) ? '当前图片上下文不完整，无法提交重画' : '这张图正在处理中，请稍候')
           return
         }
-        if (view.mediaContext) mediaPostLocks.add(lock)
+        if (view.mediaContext) lockPost(lock)
         openPromptEditor({ busy: 'redraw', note: '正在重画…' })
         try {
           if (view.mediaContext) {
@@ -1815,7 +1852,7 @@ function versionsOf(jobId) {
           openPromptEditor({ uncertain: Boolean(view.mediaContext) })
           say(view.mediaContext ? '状态待确认（来源任务 ' + view.mediaContext.jobId + '）；请求可能已提交，请检查生图平台，暂不自动重试。' : '失败：' + (error?.message ?? error))
         } finally {
-          if (view.mediaContext) mediaPostLocks.delete(lock)
+          if (view.mediaContext) unlockPost(lock)
           openPromptEditor({ busy: '' })
         }
       }
