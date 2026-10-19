@@ -2372,7 +2372,15 @@ function versionsOf(jobId) {
                     turn: view.turn,
                   }),
                 }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
-                if (r && r.ok) { setActionNote('已提交重画，出图后自动替换') }
+                if (r && r.ok) {
+                  // 登记本次提交 —— 这是第四条提交路径（查看器的「生图」按钮自己 fetch，
+                  // 既不经过 mediaAction 函数、也不经过 redraw()），前三轮登记都漏了它，
+                  // 于是 submittedJobs 一直是空的、note-submitted 从来没上报过；
+                  // 提示平时靠 groupBusy 兜着，只在组里恰好没有别的活时才露馅，
+                  // 所以看起来像「偶发」。登记会顺带广播 -> 立刻重拉组状态，提示马上出现。
+                  noteSubmittedJob(String(view.mediaId || ''), String(r.jobId || shownId))
+                  setActionNote('已提交重画，出图后自动替换')
+                }
                 else setActionNote('重画失败：' + ((r && r.error) || '未知原因'))
               } finally { setActionBusy('') }
             },
