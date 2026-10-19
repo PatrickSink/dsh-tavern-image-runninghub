@@ -1076,6 +1076,19 @@ let openImageOverlay = null
       // TavernPluginMediaItem 会统一追加 figcaption；这里保留 alt 和预览标题即可。
       // 手机上手指出得准才行：按钮给足触控高度（38px 起），滑块在小屏上占更多宽度。
       const barBtn = { padding: '8px 14px', minHeight: '38px', fontSize: '12px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'transparent', color: '#dbe3ee', cursor: 'pointer' }
+      // 状态行文案抽成变量：span 上要挂「点击看全文」，onClick 里得能拿到完整文本。
+      // 这些说明性的文字（尤其取消后那条）比一行长得多，窄屏上原先被 ellipsis 截掉、看不全。
+      const statusFullText = taskState === 'uncertain' ? (queryUnavailable
+        ? '状态待确认：旧作业没有保存 ComfyUI 任务号，无法查询找回；若 ComfyUI 未收到任务，请从正文末重新生图。'
+        : '状态待确认：任务号 ' + effectiveJobId + (currentPolledJob?.comfyId ? '（ComfyUI ' + String(currentPolledJob.comfyId) + '）' : currentPolledJob?.providerTaskId ? '（平台任务 ' + String(currentPolledJob.providerTaskId) + '）' : '') + '；请到生图平台检查，暂不自动重试。')
+        : taskState === 'cancelled' && cancellationMayContinue ? '已停止本地等待，但平台请求可能已发出并继续生成；请到生图平台检查用量。' + (replacement?.error ? ' ' + String(replacement.error).slice(0, 140) : '')
+          : taskState === 'cancelled' ? '已取消'
+            : item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel
+      // 提示行是告知性的：用户看完可以关掉。只影响本地显示，不去动后端状态。
+      const [statusClosed, setStatusClosed] = React.useState(false)
+      // 点状态行「就近」弹全文
+      const [statusPeek, setStatusPeek] = React.useState(null)
+      const showStatusRow = !quietStatus && !statusClosed
       return h('div', { style: wrapStyle },
         widthBarOpen ? h('div', {
           style: { position: 'fixed', left: '50%', transform: 'translateX(-50%)', bottom: '12px', zIndex: 2147483002, display: 'flex', gap: '8px', alignItems: 'center', padding: '10px 12px', paddingBottom: 'calc(10px + env(safe-area-inset-bottom, 0px))', borderRadius: '12px', background: 'rgba(23,26,33,.97)', border: '1px solid rgba(120,140,170,.4)', boxShadow: '0 12px 32px rgba(0,0,0,.5)', color: '#dbe3ee', fontSize: '12px', maxWidth: '96vw', flexWrap: 'wrap', boxSizing: 'border-box' },
@@ -1134,7 +1147,7 @@ let openImageOverlay = null
         }) : placeholder,
         // 状态与操作合成图片右下角的一行，不再是图片下方两个独立的框。
         // 颜色故意与正文文字区分开（琥珀色文字 + 红色取消），一眼能看出是插图的临时状态。
-        quietStatus ? null : h('div', {
+        showStatusRow ? h('div', {
           style: {
             position: 'absolute', right: '10px', bottom: '10px',
             // 必须待在同一行：文案 + 取消/重试/重新查询这些按钮。
@@ -1158,28 +1171,61 @@ let openImageOverlay = null
         },
           // 文字部分允许收缩并省略：这样窄屏上「生成中」和「取消这张图」一定待在同一行，
           // 被压缩的是文字，按钮保持完整可点。
-          h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-            taskState === 'uncertain' ? (queryUnavailable
-              ? '状态待确认：旧作业没有保存 ComfyUI 任务号，无法查询找回；若 ComfyUI 未收到任务，请从正文末重新生图。'
-              : '状态待确认：任务号 ' + effectiveJobId + (currentPolledJob?.comfyId ? '（ComfyUI ' + String(currentPolledJob.comfyId) + '）' : currentPolledJob?.providerTaskId ? '（平台任务 ' + String(currentPolledJob.providerTaskId) + '）' : '') + '；请到生图平台检查，暂不自动重试。') :
-            taskState === 'cancelled' && cancellationMayContinue ? '已停止本地等待，但平台请求可能已发出并继续生成；请到生图平台检查用量。' + (replacement?.error ? ' ' + String(replacement.error).slice(0, 140) : '') :
-            taskState === 'cancelled' ? '已取消' :
-            // 不再区分「替换任务」与别的来源 —— 提示是「这一组还有没有活在跑」，
-            // 与这张图是被重绘、重新生图还是初次生成无关。activeReplacement 是旧的单张判据，
-            // 它的 replacement 记录会一直留在数据里，于是每次切换正文都闪一下「替换任务…」。
-            item && item.status === 'failed' ? '配图失败：' + String(item.error || currentPolledJob?.error || '未知原因').slice(0, 120) : statusLabel),
+          // 说明性文字往往比一行长，窄屏放不下：这里允许横向滚动看全，
+          // 并且点一下就地在手指附近弹出完整的一段（比 tooltip 在手机上好用得多）。
+          h('span', {
+            key: 'illustration-status-text',
+            title: statusFullText,
+            style: { minWidth: 0, overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap', cursor: 'pointer', scrollbarWidth: 'none' },
+            onClick: event => {
+              event.stopPropagation()
+              setStatusPeek({ text: statusFullText, x: Number(event.clientX || 0), y: Number(event.clientY || 0) })
+            },
+          }, statusFullText),
           validMediaContext(mediaContext) && (Boolean(replacement) || item && item.status === 'pending' || ['pending', 'running', 'queued', 'processing'].includes(currentPolledJob?.state)) && !actionBusy && ['pending', 'running', 'queued', 'processing'].includes(taskState)
             ? h('button', { type: 'button', onClick: () => mediaAction('cancel'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#f2686b', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '取消这张图') : null,
           validMediaContext(mediaContext) && !actionBusy && taskState === 'failed' && !jobMayHaveReachedProvider
             ? h('button', { type: 'button', onClick: () => mediaAction('retry'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '重试这张图') : null,
-          validMediaContext(mediaContext) && !queryUnavailable && (taskState === 'uncertain' || (taskState === 'cancelled' && cancellationMayContinue))
+          // 「重新查询」只对「待确认」有意义 —— 那是去平台把已经产出的结果找回来
+          validMediaContext(mediaContext) && !queryUnavailable && taskState === 'uncertain'
             ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
                 style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
-          ),
+          // 取消后（本地已停、平台可能仍在跑）给两个出口，缺一不可：
+          //   ① 重新查询 —— 只读确认终态，顺带解开重画锁；没有它，这一处之后就没法再重画了。
+          //   ② 关闭     —— 纯收起这条提示（用户要求），不去动后端状态。
+          validMediaContext(mediaContext) && !queryUnavailable && taskState === 'cancelled' && cancellationMayContinue
+            ? h('button', { type: 'button', onClick: () => mediaAction('recover'), disabled: actionBusy,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, actionBusy ? '查询中…' : '重新查询状态') : null,
+          validMediaContext(mediaContext) && taskState === 'cancelled' && cancellationMayContinue
+            ? h('button', { type: 'button', onClick: () => { setStatusPeek(null); setStatusClosed(true) }, disabled: actionBusy,
+                style: { flexShrink: 0, whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0, color: '#8fb4ff', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '2px' } }, '关闭') : null,
+        ) : null,
         ),
         imgError ? h('div', { style: noteStyle }, imgRetry >= 20 ? '图取不到（' + imgError + '）　' : '正在取回…（第 ' + imgRetry + ' 次）', imgRetry >= 20 ? h('button', { type: 'button', onClick: () => { setImgError(''); setImgRetry(0); setImgNonce(x => x + 1) } }, '重新读取') : null) : null,
+        // 点状态行后在点击位置附近弹出完整文字（再点一下收起）。
+        // 用 fixed 定位脱离容器，避免撑动图片布局；坐标做边距收敛，防止跑出屏幕。
+        statusPeek ? (() => {
+          const vw = typeof window !== 'undefined' ? Number(window.innerWidth) || 360 : 360
+          const vh = typeof window !== 'undefined' ? Number(window.innerHeight) || 640 : 640
+          const width = Math.min(320, Math.round(vw * 0.86))
+          const left = Math.max(8, Math.min(statusPeek.x - 16, vw - width - 8))
+          const top = Math.max(8, Math.min(statusPeek.y + 14, vh - 150))
+          return h('div', {
+            key: 'status-peek',
+            onClick: () => setStatusPeek(null),
+            style: {
+              position: 'fixed', left: left + 'px', top: top + 'px', zIndex: 2147483003,
+              width: width + 'px', boxSizing: 'border-box',
+              padding: '9px 12px', borderRadius: '10px',
+              background: 'rgba(20,23,30,.97)', border: '1px solid rgba(120,140,170,.45)',
+              color: '#dbe3ee', fontSize: '12px', lineHeight: 1.65,
+              whiteSpace: 'normal', wordBreak: 'break-word',
+              boxShadow: '0 10px 28px rgba(0,0,0,.5)', cursor: 'pointer',
+            },
+          }, statusPeek.text)
+        })() : null,
       )
     }
 
