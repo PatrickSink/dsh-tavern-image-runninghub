@@ -2776,6 +2776,8 @@ function versionsOf(jobId) {
                     turn: view.turn,
                   }),
                 }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
+                // 这条路径不经过 mediaAction，必须自己上报，否则出问题时诊断里什么都没有
+                reportHost('media-op', { operation: 'viewer-redraw', target: String(shownId || '').slice(0, 8), ok: r && r.ok ? 1 : 0, error: String((r && r.error) || '').slice(0, 80) })
                 if (r && r.ok) {
                   // 登记本次提交 —— 这是第四条提交路径（查看器的「生图」按钮自己 fetch，
                   // 既不经过 mediaAction 函数、也不经过 redraw()），前三轮登记都漏了它，
@@ -2849,7 +2851,9 @@ function versionsOf(jobId) {
         // 待确认时在那句失败提示下面直接给两个出口（用户要求）。
         // 这里能拿到完整上下文（gameId/mediaId/textVersion/turn），两个动作都能真正执行。
         actionUncertain ? React.createElement('div', {
-          style: { flex: '0 0 auto', order: 4, display: 'flex', gap: '10px', justifyContent: 'center', alignItems: 'center', padding: '0 16px 10px', boxSizing: 'border-box' },
+          // order 必须和 actionNote(4) 区分开：同层里两个 order:4 的排列不确定，
+          // 被挤到参数面板后面就看不见了（用户反馈「点了生图没有出现按钮」）。
+          style: { flex: '0 0 auto', order: 5, display: 'flex', gap: '10px', justifyContent: 'center', alignItems: 'center', padding: '0 16px 10px', boxSizing: 'border-box' },
         },
           React.createElement('button', {
             type: 'button', disabled: Boolean(actionBusy),
@@ -2903,7 +2907,7 @@ function versionsOf(jobId) {
         ) : null,
         showParams && detail ? React.createElement('div', {
           style: {
-            flex: '0 1 auto', order: 5, maxHeight: '46vh', overflowY: 'auto', margin: '0 14px 10px', padding: '12px 14px',
+            flex: '0 1 auto', order: 6, maxHeight: '46vh', overflowY: 'auto', margin: '0 14px 10px', padding: '12px 14px',
             background: 'rgba(20,24,32,.92)', border: '1px solid rgba(160,180,210,.28)', borderRadius: '10px',
             fontSize: '12px', lineHeight: 1.75, color: '#c8d2e0', position: 'relative', zIndex: 2147483007,
           },
