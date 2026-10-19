@@ -2114,6 +2114,8 @@ function versionsOf(jobId) {
           // 在这里引用会抛 ReferenceError（之前的写法有这个隐患）。调用方传什么就用什么。
           textVersion: optTextVersion,
           turn: optTurn,
+          // 长按/右键进来时带上它 —— overlay 会据此自动展开参数面板
+          showParams: Boolean(opts && opts.showParams),
         })
       } catch { /* 看图失败不影响正文 */ }
     }
@@ -2494,6 +2496,13 @@ function versionsOf(jobId) {
       const [imageWarning, setImageWarning] = React.useState('')
       const [showParams, setShowParams] = React.useState(false)
       const [detail, setDetail] = React.useState(null)
+      // 参数面板里的可编辑草稿 —— 把「长按提示词编辑器」的能力并进来：
+      // 同一处既能看这一张用的渠道/模型/尺寸，也能直接改提示词、让后台改、用新词重画。
+      const [promptDraft, setPromptDraft] = React.useState('')
+      const [negativeDraft, setNegativeDraft] = React.useState('')
+      const [improveNote, setImproveNote] = React.useState('')
+      // 「看展开结果」用：rawPrompt 是展开前，finalPrompt 是展开后
+      const [finalPrompt, setFinalPrompt] = React.useState('')
       const [actionBusy, setActionBusy] = React.useState('')
       const [actionNote, setActionNote] = React.useState('')
       // 生图被后端拒绝时（「上一次请求结果未知，暂不重发」），要在这里给出两个出口。
@@ -2828,7 +2837,15 @@ function versionsOf(jobId) {
               setActionBusy('detail'); setActionNote('')
               try {
                 const r = await jsonFetch(BASE + '/job-detail?id=' + encodeURIComponent(shownId)).catch(() => null)
-                if (r && r.ok && r.job) { setDetail(r.job); setShowParams(true) }
+                if (r && r.ok && r.job) {
+                  setDetail(r.job)
+                  setShowParams(true)
+                  // 草稿取「展开前」的原始提示词：能一眼看出调用了哪些角色 / 服装，
+                  // 改完直接重画，比编辑展开后的长串更好用（与旧编辑器一致）。
+                  setPromptDraft(String(r.job.rawPrompt || r.job.tag || r.job.prompt || ''))
+                  setNegativeDraft(String(r.job.negative || ''))
+                  setFinalPrompt(String(r.job.prompt || ''))
+                }
                 else setActionNote('读不到这张的参数')
               } finally { setActionBusy('') }
             },
@@ -2972,8 +2989,75 @@ function versionsOf(jobId) {
           detailRow('种子', detail.seed === undefined || detail.seed === null ? '' : String(detail.seed)),
           detailRow('步数 / CFG', (detail.steps === null || detail.steps === undefined ? '—' : String(detail.steps)) + ' / ' + (detail.cfg === null || detail.cfg === undefined ? '—' : String(detail.cfg))),
           detail.loras && detail.loras.length ? detailRow('LoRA', detail.loras.join('、')) : null,
-          detailBlock('正面提示词', detail.prompt || ''),
-          detailBlock('负面提示词', detail.negative || ''),
+          // ── 提示词：可编辑（原「长按编辑器」的核心能力并到这里）─────────
+          React.createElement('div', { style: { marginTop: '10px' } },
+            React.createElement('div', { style: { color: '#8b95a5', marginBottom: '4px' } }, '正面提示词（可改，改完点下方「用这段重画」）'),
+            React.createElement('textarea', {
+              value: promptDraft,
+              onChange: event => setPromptDraft(event.target.value),
+              rows: 4, spellCheck: false,
+              style: { width: '100%', boxSizing: 'border-box', resize: 'vertical', minHeight: '76px', maxHeight: '30vh', padding: '8px 10px', background: 'rgba(0,0,0,.35)', border: '1px solid rgba(160,180,210,.25)', borderRadius: '6px', color: '#dbe3ee', fontSize: '12px', lineHeight: 1.7, fontFamily: 'inherit' },
+            }),
+          ),
+          React.createElement('div', { style: { marginTop: '8px' } },
+            React.createElement('div', { style: { color: '#8b95a5', marginBottom: '4px' } }, '负面提示词'),
+            React.createElement('textarea', {
+              value: negativeDraft,
+              onChange: event => setNegativeDraft(event.target.value),
+              rows: 2, spellCheck: false,
+              style: { width: '100%', boxSizing: 'border-box', resize: 'vertical', minHeight: '48px', maxHeight: '20vh', padding: '8px 10px', background: 'rgba(0,0,0,.35)', border: '1px solid rgba(160,180,210,.25)', borderRadius: '6px', color: '#dbe3ee', fontSize: '12px', lineHeight: 1.7, fontFamily: 'inherit' },
+            }),
+          ),
+          // ── 让后台帮你改 ─────────────────────────────────────
+          React.createElement('div', { style: { marginTop: '10px' } },
+            React.createElement('div', { style: { color: '#8b95a5', marginBottom: '4px' } }, '让后台帮你改（说要求，例如「改成白天」「多加细节」）'),
+            React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'stretch' } },
+              React.createElement('input', {
+                value: improveNote,
+                onChange: event => setImproveNote(event.target.value),
+                placeholder: '想怎么改？',
+                style: { flex: '1 1 auto', minWidth: 0, padding: '8px 10px', background: 'rgba(0,0,0,.35)', border: '1px solid rgba(160,180,210,.25)', borderRadius: '6px', color: '#dbe3ee', fontSize: '12px', fontFamily: 'inherit' },
+              }),
+              React.createElement('button', {
+                type: 'button', disabled: Boolean(actionBusy),
+                onClick: async () => {
+                  if (!shownId) return
+                  setActionBusy('improve'); setActionNote('')
+                  try {
+                    const r = await jsonFetch(BASE + '/improve-prompt', {
+                      method: 'POST', headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ jobId: String(shownId), prompt: promptDraft, instruction: improveNote }),
+                    }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
+                    if (!r || !r.ok || !r.prompt) { setActionNote('没改成：' + ((r && r.error) || '模型没返回')); return }
+                    setPromptDraft(String(r.prompt))
+                    setActionNote('已按你的要求改写，可以直接重画')
+                  } finally { setActionBusy('') }
+                },
+                style: { flex: '0 0 auto', padding: '8px 14px', fontSize: '12px', borderRadius: '6px', border: '1px solid rgba(160,180,210,.45)', background: 'transparent', color: '#dbe3ee', cursor: actionBusy ? 'default' : 'pointer', whiteSpace: 'nowrap' },
+              }, actionBusy === 'improve' ? '改…' : '🤖 让后台改'),
+            ),
+          ),
+          // ── 用这段重画（与顶部「🎨 生图」的区别：这个会用你改过的提示词）──
+          React.createElement('div', { style: { display: 'flex', gap: '10px', justifyContent: 'flex-end', alignItems: 'center', marginTop: '12px' } },
+            React.createElement('button', {
+              type: 'button', disabled: Boolean(actionBusy),
+              onClick: async () => {
+                const ctx = { gameId: String(view.gameId || lastSessionId || ''), mediaId: String(view.mediaId || ''), jobId: String(shownId || ''), textVersion: String(view.textVersion || ''), turn: view.turn }
+                if (!ctx.gameId || !ctx.mediaId) { setActionNote('缺少图片上下文，无法重画'); return }
+                setActionBusy('reuse'); setActionNote('')
+                try {
+                  const r = await jsonFetch(BASE + '/media-action', {
+                    method: 'POST', headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ operation: 'redraw', ...ctx, prompt: promptDraft, negative: negativeDraft }),
+                  }).catch(error => ({ ok: false, error: String(error && error.message || error) }))
+                  if (!r || !r.ok) { setActionNote('重画失败：' + ((r && r.error) || '未知原因')); return }
+                  noteSubmittedJob(ctx.mediaId, String(r.jobId || ctx.jobId))
+                  setActionNote('已提交重画，出图后自动替换')
+                } finally { setActionBusy('') }
+              },
+              style: { padding: '8px 18px', fontSize: '13px', borderRadius: '9px', border: '1px solid rgba(106,168,255,.6)', background: 'rgba(106,168,255,.18)', color: '#dbe3ee', cursor: actionBusy ? 'default' : 'pointer' },
+            }, actionBusy === 'reuse' ? '🎨 提交中…' : '🎨 用这段重画'),
+          ),
         ) : null,
         // 图片区：横滑切图、双指缩放、放大后拖动
         React.createElement('div', {
