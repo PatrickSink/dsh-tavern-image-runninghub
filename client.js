@@ -116,8 +116,6 @@ let openImageOverlay = null
       'apply-version-skip', 'apply-version-result', 'apply-version-threw',
       // 覆盖表写入（含监听器数量）：确认「切图后正文换图」这条链路走到了哪一步。
       'media-job-override',
-      // 插图渲染时最终用的作业号：排查「覆盖表写了但正文没换」用的取证，一旦拿到结论就删。
-      'official-image-render',
     ])
 
     function reportFingerprint(stage, data) {
@@ -747,18 +745,8 @@ let openImageOverlay = null
           ? BASE + '/jobs?id=' + encodeURIComponent(effectiveJobId) + '&image=1'
           : String(item && item.url || '') || (cachedImageReady && jobId && !(item && item.status === 'failed') && !(item && item.data && item.data.cancelled === true) ? BASE + '/jobs?id=' + encodeURIComponent(jobId) + '&image=1' : '')
       const jobMayHaveReachedProvider = Boolean(currentPolledJob && (currentPolledJob.requestMayHaveSucceeded === true || currentPolledJob.state === 'uncertain'))
-      // 临时取证：确认组件渲染时最终用的到底是哪张作业（依赖在此处都已定义）。
-      // 覆盖表已确认写入、监听器也确认存在，正文却没换 —— 只可能是这里算出来的值不对。
-      useEffect(() => {
-        reportHost('official-image-render', {
-          override: overrideJobId.slice(0, 8),
-          active: activeJobId.slice(0, 8),
-          jobId: jobId.slice(0, 8),
-          effective: effectiveJobId.slice(0, 8),
-          recovered: recoveredReady,
-          src: String(src || '').slice(-32),
-        })
-      }, [overrideJobId, activeJobId, jobId, effectiveJobId, recoveredReady, src])
+      // 排查「切图后正文不换」时加的那条渲染取证（official-image-render）已删除：
+      // 结论已经拿到（真正的原因是 attachment 才是显示来源），不必再每次渲染都上报一次。
       const isUncertain = Boolean((currentPolledJob && currentPolledJob.state === 'uncertain') || jobMayHaveReachedProvider || (replacement && replacement.state === 'uncertain' && !recoveredReady))
       const isCancelled = !recoveredReady && (Boolean(item && item.data && item.data.cancelled === true) || Boolean(currentPolledJob && currentPolledJob.state === 'cancelled') || Boolean(replacement && replacement.state === 'cancelled'))
       // taskState 的取值顺序很关键，这里已经排错两次：
