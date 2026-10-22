@@ -264,8 +264,11 @@ test('attach-turn waits for official getTurn data and coalesces with settled aut
     async update(id, patch) { Object.assign(media.find(item => item.id === id), patch) },
     async remove(id) { const index = media.findIndex(item => item.id === id); if (index >= 0) media.splice(index, 1) },
   }
-  const f = await runtime(t, async function* () {
-    plannerCalls++
+  const f = await runtime(t, async function* (args) {
+    // 档案维护现在是一次独立的 runTask 调用（也走这个 stream mock），
+    // 它不带 <image> 块。只数真正的生图规划调用，否则会被档案那一次干扰。
+    const isSceneState = /角色状态记录员/.test(String(args?.system || ''))
+    if (!isSceneState) plannerCalls++
     yield { type: 'text-delta', text: block('settled scene') }
   }, {}, {
     tavern, attachments: { async saveImage() { return { id: 'attachment' } } },
@@ -975,3 +978,236 @@ test('graph route saves parameters with revision checking and rejects traversal'
 //   · smart stream error after first image preserves its paid job and reports failure
 // 它们验证的是 onDelta 流式路径下的重试与「提前提交」。runTask 非流式，整轮结果一次返回，
 // 提交统一在解析之后，因此不存在「流中途失败但已有图已付费」这类中间态。
+
+test('本局没有 MVU 变量时必须清空 skill，不能留着上一局的数据', async t => {
+  // scene-mvu-state 是一份全局文件。取不到变量时若不清空，
+  // 它就会保留上一局（别的卡）的人物和穿着，模型一加载就把人画串。
+  const tavern = {
+    apiVersion: 2,
+    promptSection() { return () => {} },
+    onTurnSettled() { this.bridgeReady = true; return () => {} },
+    onTimelineChanged() { return () => {} },
+    onGameRemoved() { return () => {} },
+    // 这一局没有 variables（非 MVU 卡）
+    async getTurn({ turn }) { return { turn, textVersion: 'v1', card: { id: 'cards/y.json', name: 'Y' } } },
+    async getCharacterDesigns() { return { characters: [] } },
+    async list() { return [] },
+    async attach() { return { id: 'm' } },
+    async update() {}, async remove() {},
+    async readTurnData() { return null }, async saveTurnData() {},
+    async saveSkill(input) { saved.push(input); return { name: input.name, overwritten: true } },
+    async runTask({ prompt }) { seenPrompt = String(prompt || ''); return { text: '<decision>draw</decision><reason>ok</reason>' + block('x', '正文一句') } },
+  }
+  const saved = []
+  let seenPrompt = ''
+  const f = await runtime(t, async function* () { yield { type: 'text-delta', text: block('x', '正文一句') } }, {}, { tavern })
+
+  const res = await f.request('plan', { text: '正文一句。', messageId: 'm2', turn: 1, count: 1, sessionId: 'no-mvu-game' })
+  assert.equal(res.status, 200)
+
+  assert.equal(saved.length, 1, '取不到变量时也要写一次 skill')
+  assert.equal(saved[0].name, 'scene-mvu-state')
+  assert.equal(saved[0].overwrite, true, '必须覆盖，才能清掉上一局的内容')
+  // 语义已升级：不再只讲 MVU，而是「本局的生图角色档案」——没有 MVU 时按正文建档
+  assert.match(saved[0].body, /本局角色档案/, '应是角色档案，不是纯 MVU 状态')
+  assert.match(saved[0].body, /本局还没有建档/, '本局无档案时应明说')
+  assert.doesNotMatch(saved[0].body, /###\s*叶冰/, '不能残留上一局的角色数据')
+
+  // 提示词也要让 Agent 去加载它，拿到「本局无 MVU」的明确指令
+  assert.match(seenPrompt, /加载 scene-mvu-state/, '仍应要求加载 skill')
+  assert.match(seenPrompt, /不要套用档案里其他角色的外貌与穿着/, '应明确禁止套用其他角色的外貌')
+})
+
+test('MVU 走 skill：规划前写 scene-mvu-state，提示词要求用 skill 加载它', async t => {
+  // 宿主的限制：插件任务拿不到 tavern_read_variables；runTask 的 tools 参数在 task='plugin'
+  // 下不生效（工具表由 stableBackgroundTools 在会话建立时固定）。
+  // 但 skill 在白名单里，且 readSkill 每次实时读盘 —— 所以每轮把变量写进 skill 这条路成立。
+  const state = {
+    current: {
+      gameId: 'mvu-game', turn: 1, textVersion: 'v1',
+      text: '她侧躺在帐幔半垂的寝殿内，任那件衣裳滑落。',
+      card: { id: 'card-mvu', name: 'MVU card' },
+      variables: { stat_data: {
+        周围人物: { 叶冰: { 服饰: '大红薄衫湿透贴身', 好感度: 82 } },
+        地点: '殿心矮几旁',
+      } },
+    },
+  }
+  const saved = []
+  let seenPrompt = ''
+  const tavern = {
+    apiVersion: 2,
+    promptSection() { return () => {} },
+    onTurnSettled() { this.bridgeReady = true; return () => {} },
+    onTimelineChanged() { return () => {} },
+    onGameRemoved() { return () => {} },
+    async getTurn({ turn }) { return state.current.turn === turn ? state.current : null },
+    async getCharacterDesigns() { return { characters: [] } },
+    async list() { return [] },
+    async attach() { return { id: 'media-x' } },
+    async update() {}, async remove() {},
+    async readTurnData() { return null }, async saveTurnData() {},
+    async saveSkill(input) { saved.push(input); return { name: input.name, overwritten: true } },
+    async runTask({ prompt }) {
+      // 档案维护是另一次调用，别让它覆盖规划提示词
+      if (!/角色状态记录员/.test(String(prompt || ''))) {
+        seenPrompt = String(prompt || '')
+        return { text: '<decision>draw</decision><reason>有值得画的瞬间</reason>' + block('画面一', '任那件衣裳滑落') }
+      }
+      return { text: '{"characters":[]}' }
+    },
+  }
+  const f = await runtime(t, async function* () {
+    yield { type: 'text-delta', text: block('画面一', '任那件衣裳滑落') }
+  }, {}, { tavern })
+
+  const res = await f.request('plan', { text: state.current.text, messageId: 'm1', turn: 1, count: 1, sessionId: 'mvu-game' })
+  assert.equal(res.status, 200)
+
+  // 必须写过 skill，且内容带上变量值
+  assert.equal(saved.length, 1, '规划前应写一次 MVU skill')
+  assert.equal(saved[0].name, 'scene-mvu-state', 'skill 名应为 scene-mvu-state')
+  assert.equal(saved[0].overwrite, true, '必须覆盖写，否则第二次就写不进去')
+  assert.match(saved[0].body, /大红薄衫湿透贴身/, 'skill 正文应含服饰变量')
+  assert.match(saved[0].body, /殿心矮几旁/, 'skill 正文应含地点变量')
+  assert.doesNotMatch(saved[0].body, /好感度/, '数值字段不应写入')
+
+  // 提示词要求用 skill 加载，且不再提旧工具
+  assert.match(seenPrompt, /加载 scene-mvu-state/, '提示词应要求加载该 skill')
+  assert.match(seenPrompt, /这一步必做/, '应写成必做')
+  assert.doesNotMatch(seenPrompt, /tavern_read_variables|mvu_state_read/, '不应再提用不了的工具')
+})
+
+test('生图角色档案跨轮累积：正文没写服装时沿用上一轮，MVU 只覆盖它能提供的字段', async t => {
+  const m = await import('../lib/character-history.js')
+  const store = {}
+  const api = {
+    readTurnData: async ({ turn }) => store[turn] ? { data: store[turn] } : null,
+    saveTurnData: async ({ turn, data }) => { store[turn] = data },
+  }
+  const round = async (turn, updates, mvu) => {
+    let base = null
+    for (const at of [turn, turn - 1]) {
+      const saved = await api.readTurnData({ turn: at })
+      if (saved?.data?.characters) { base = saved.data; break }
+    }
+    let working = base || m.emptyCharacterSnapshot()
+    if (mvu) working = m.overlayMvuState(working, mvu)
+    const merged = m.mergeSceneState(working, updates, { turn })
+    await api.saveTurnData({ turn, data: m.boundSceneState(merged.snapshot) })
+    return m.renderSceneState(merged.snapshot)
+  }
+
+  // 第 1 轮：正文写清全身服装
+  const first = await round(1, [{ name: '叶冰', fields: { outfit: '大红薄衫湿透贴身，下身素白中裤，赤足', hair: '黑长发高髻' } }])
+  assert.match(first, /大红薄衫/)
+  assert.match(first, /黑长发高髻/)
+
+  // 第 2 轮：正文只写姿势，没提衣服 —— 服装发型必须保留
+  const second = await round(2, [{ name: '叶冰', fields: { posture: '双膝跪地' } }])
+  assert.match(second, /大红薄衫/, '正文没提衣服时必须沿用上一轮')
+  assert.match(second, /黑长发高髻/, '发型也要沿用')
+  assert.match(second, /双膝跪地/, '本轮新信息要写进去')
+
+  // 第 3 轮：MVU 说她换了衣服 —— 只覆盖服装，发型姿势不动
+  const third = await round(3, [], [{ path: '周围人物.叶冰.服饰', value: '水青色长裙，肩带滑落一侧' }])
+  assert.match(third, /水青色长裙/, 'MVU 应覆盖服装')
+  assert.doesNotMatch(third, /大红薄衫/, '旧服装应被替换')
+  assert.match(third, /黑长发高髻/, 'MVU 没提供的字段不能被清掉')
+  assert.match(third, /双膝跪地/, '姿势也不能被清掉')
+
+  // 存档要压得住每轮上限
+  assert.ok(JSON.stringify(store[3]).length < 64 * 1024)
+})
+
+test('scene_state 解析：格式坏掉不影响出图，也不清空已有档案', async t => {
+  const { parseSceneState } = await import('../lib/planner.js')
+  assert.deepEqual(parseSceneState('没有这个块').characters, [])
+  assert.equal(parseSceneState('<scene_state>坏 JSON</scene_state>').valid, false)
+  const ok = parseSceneState('<scene_state>{"characters":[{"name":"叶冰","fields":{"outfit":"红衫"}}]}</scene_state>')
+  assert.equal(ok.valid, true)
+  assert.equal(ok.characters[0].fields.outfit, '红衫')
+  // 缺 name 或 fields 的条目要被丢掉，而不是让整个档案写坏
+  const partial = parseSceneState('<scene_state>{"characters":[{"fields":{"outfit":"x"}},{"name":"","fields":{}},{"name":"好","fields":{"outfit":"绿衣"}}]}</scene_state>')
+  assert.equal(partial.characters.length, 1)
+  assert.equal(partial.characters[0].name, '好')
+})
+
+test('基准外貌不再由生图 Agent 负责：档案维护拆成独立调用', async t => {
+  // 建档/补基准移到了 updateSceneState（独立 runTask 调用），
+  // 生图规划提示词里不该再有「先查世界书补外貌」这一步，也不该要求输出 scene_state。
+  const state = { current: { gameId: 'seed-game', turn: 1, textVersion: 'v1', text: '叶冰抬起头看了他一眼。', card: { id: 'cards/a.json', name: 'A' } } }
+  let planPrompt = ''
+  const tavern = {
+    apiVersion: 2, promptSection() { return () => {} },
+    onTurnSettled() { this.bridgeReady = true; return () => {} },
+    onTimelineChanged() { return () => {} }, onGameRemoved() { return () => {} },
+    async getTurn({ turn }) { return state.current.turn === turn ? state.current : null },
+    async getCharacterDesigns() { return { characters: [] } },
+    async list() { return [] }, async attach() { return { id: 'm' } }, async update() {}, async remove() {},
+    async readTurnData() { return null }, async saveTurnData() {},
+    async saveSkill() { return { name: 'x' } },
+    async runTask({ prompt }) {
+      if (/角色状态记录员/.test(String(prompt || ''))) {
+        assert.match(String(prompt), /角色状态记录员/, '档案任务的系统说明应到位')
+        return { text: '{"characters":[]}' }
+      }
+      planPrompt = String(prompt || '')
+      return { text: '<decision>draw</decision><reason>ok</reason>' + block('x', '叶冰抬起头') }
+    },
+  }
+  const f = await runtime(t, async function* () { yield { type: 'text-delta', text: block('x', '叶冰抬起头') } }, {}, { tavern })
+  await f.request('plan', { text: state.current.text, messageId: 'm', turn: 1, count: 1, sessionId: 'seed-game' })
+
+  assert.doesNotMatch(planPrompt, /<scene_state>/, '生图 Agent 不该再输出档案')
+  assert.doesNotMatch(planPrompt, /先用世界书补基准外貌/, '建档不再由生图 Agent 做')
+  assert.match(planPrompt, /加载 scene-mvu-state/, '仍要读档案')
+})
+
+test('档案裁剪不能丢掉 state：boundSceneState 单独用，别再套 boundCharacterSnapshot', async t => {
+  const m = await import('../lib/character-history.js')
+  const merged = m.mergeSceneState(m.emptyCharacterSnapshot(), [{ name: '叶冰', fields: { outfit: '红衫褪至膝弯' } }], { turn: 21 })
+  const only = m.boundSceneState(merged.snapshot)
+  assert.equal(only.characters['叶冰'].state.outfit, '红衫褪至膝弯', 'boundSceneState 必须保留 state')
+
+  // 记录这个陷阱：boundCharacterSnapshot 是给永久特征写的，会把 state 清空
+  const wrong = m.boundCharacterSnapshot(only)
+  assert.deepEqual(wrong.characters['叶冰'].state, undefined, 'boundCharacterSnapshot 会丢 state（这正是曾经的 bug）')
+})
+
+test('MVU 通用适配：不依赖特定卡的变量结构', async t => {
+  const m = await import('../lib/character-history.js')
+  const run = fields => m.renderSceneState(m.overlayMvuState(m.emptyCharacterSnapshot(), fields))
+
+  // 本卡结构
+  assert.match(run([{ path: '周围人物.叶冰.服饰', value: '红衫湿透' }]), /叶冰[\s\S]*红衫湿透/)
+  // 扁平结构（无容器层）
+  assert.match(run([{ path: '叶冰.服装', value: '青衫' }]), /叶冰[\s\S]*青衫/)
+  // 英文结构
+  const en = run([{ path: 'characters.Alice.outfit', value: 'black dress' }])
+  assert.match(en, /Alice/)
+  assert.match(en, /black dress/)
+  // 数组 + 显式姓名字段
+  const arr = run([
+    { path: '角色[0].名字', value: '苏念' },
+    { path: '角色[0].衣着', value: '白衣' },
+  ])
+  assert.match(arr, /苏念/, '应使用显式姓名字段而不是「角色[0]」')
+  assert.match(arr, /白衣/)
+  // 细粒度覆盖大类
+  const fine = run([
+    { path: '周围人物.叶冰.服饰', value: '整体衣着' },
+    { path: '周围人物.叶冰.服饰.上装', value: '月白薄纱亵衣' },
+  ])
+  assert.match(fine, /月白薄纱亵衣/, '更具体的路径应胜出')
+  // 顶层场景字段
+  assert.match(run([{ path: '地点', value: '殿心' }]), /殿心/)
+})
+
+test('生图协议不再输出 scene_state：档案由独立任务维护', async t => {
+  const { buildPlannerSystem } = await import('../lib/planner.js')
+  const system = buildPlannerSystem({ rules: '', roster: '', count: 2, context: '', extra: '' })
+  assert.doesNotMatch(system, /<scene_state>/, '生图 Agent 不该再被要求输出档案')
+  assert.match(system, /<decision>/, '出图协议仍要保留')
+  assert.match(system, /<\/固定输出协议>/, '协议结构完整')
+})
